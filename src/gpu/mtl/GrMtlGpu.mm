@@ -43,7 +43,7 @@ static bool get_feature_set(id<MTLDevice> device, MTLFeatureSet* featureSet) {
 #endif
 
     // iOS Family group 3
-#ifdef SK_BUILD_FOR_IOS
+#if defined(SK_BUILD_FOR_IOS) && !defined(TARGET_OS_TV)
     if (@available(iOS 10.0, *)) {
         if ([device supportsFeatureSet:MTLFeatureSet_iOS_GPUFamily3_v2]) {
             *featureSet = MTLFeatureSet_iOS_GPUFamily3_v2;
