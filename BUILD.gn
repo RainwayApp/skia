@@ -997,7 +997,7 @@ component("skia") {
     ]
   }
 
-  if (is_ios || is_tvos) {
+  if (is_ios) {
     sources += [
       "src/ports/SkDebug_stdio.cpp",
       "src/ports/SkFontHost_mac.cpp",
@@ -1247,7 +1247,7 @@ if (skia_enable_tools) {
   }
 
   template("test_app") {
-    if (is_ios || is_tvos) {
+    if (is_ios) {
       ios_app_bundle(target_name) {
         forward_variables_from(invoker,
                                "*",
@@ -1344,7 +1344,7 @@ if (skia_enable_tools) {
 
     if (is_android || skia_use_egl) {
       sources += [ "tools/gpu/gl/egl/CreatePlatformGLTestContext_egl.cpp" ]
-    } else if (is_ios || is_tvos) {
+    } else if (is_ios) {
       sources += [ "tools/gpu/gl/iOS/CreatePlatformGLTestContext_iOS.mm" ]
       libs += [ "OpenGLES.framework" ]
     } else if (is_linux) {
@@ -1478,7 +1478,7 @@ if (skia_enable_tools) {
       "tools/timer/Timer.cpp",
     ]
     libs = []
-    if (is_ios || is_tvos) {
+    if (is_ios) {
       sources += [ "tools/ios_utils.m" ]
       sources += [ "tools/ios_utils.h" ]
       if (skia_use_metal) {
@@ -1941,7 +1941,7 @@ if (skia_enable_tools) {
     ]
   }
 
-  if (!is_ios && !is_tvos && target_cpu != "wasm" && !(is_win && target_cpu == "arm64")) {
+  if (!is_ios && target_cpu != "wasm" && !(is_win && target_cpu == "arm64")) {
     test_app("skiaserve") {
       sources = [
         "tools/skiaserve/Request.cpp",

@@ -122,7 +122,7 @@ void GrMtlCommandBuffer::endAllEncoding() {
 void GrMtlCommandBuffer::encodeSignalEvent(id<MTLEvent> event, uint64_t eventValue) {
     SkASSERT(fCmdBuffer);
     this->endAllEncoding(); // ensure we don't have any active command encoders
-    if (@available(macOS 10.14, iOS 12.0, *)) {
+    if (@available(macOS 10.14, iOS 12.0, tvOS 12.0, *)) {
         [fCmdBuffer encodeSignalEvent:event value:eventValue];
     }
 }
@@ -131,7 +131,7 @@ void GrMtlCommandBuffer::encodeWaitForEvent(id<MTLEvent> event, uint64_t eventVa
     SkASSERT(fCmdBuffer);
     this->endAllEncoding(); // ensure we don't have any active command encoders
                             // TODO: not sure if needed but probably
-    if (@available(macOS 10.14, iOS 12.0, *)) {
+    if (@available(macOS 10.14, iOS 12.0, tvOS 12.0, *)) {
         [fCmdBuffer encodeWaitForEvent:event value:eventValue];
     }
 }

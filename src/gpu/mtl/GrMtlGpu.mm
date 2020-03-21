@@ -1287,7 +1287,7 @@ std::unique_ptr<GrSemaphore> GrMtlGpu::wrapBackendSemaphore(
 }
 
 void GrMtlGpu::insertSemaphore(GrSemaphore* semaphore) {
-    if (@available(macOS 10.14, iOS 12.0, *)) {
+    if (@available(macOS 10.14, iOS 12.0, tvOS 12.0, *)) {
         GrMtlSemaphore* mtlSem = static_cast<GrMtlSemaphore*>(semaphore);
 
         this->commandBuffer()->encodeSignalEvent(mtlSem->event(), mtlSem->value());
@@ -1295,7 +1295,7 @@ void GrMtlGpu::insertSemaphore(GrSemaphore* semaphore) {
 }
 
 void GrMtlGpu::waitSemaphore(GrSemaphore* semaphore) {
-    if (@available(macOS 10.14, iOS 12.0, *)) {
+    if (@available(macOS 10.14, iOS 12.0, tvOS 12.0, *)) {
         GrMtlSemaphore* mtlSem = static_cast<GrMtlSemaphore*>(semaphore);
 
         this->commandBuffer()->encodeWaitForEvent(mtlSem->event(), mtlSem->value());
@@ -1334,7 +1334,7 @@ void GrMtlGpu::resolveTexture(id<MTLTexture> resolveTexture, id<MTLTexture> colo
 
 #if GR_TEST_UTILS
 void GrMtlGpu::testingOnly_startCapture() {
-    if (@available(macOS 10.13, iOS 11.0, *)) {
+    if (@available(macOS 10.13, iOS 11.0, tvOS 11.0, *)) {
         // TODO: add Metal 3 interface as well
         MTLCaptureManager* captureManager = [MTLCaptureManager sharedCaptureManager];
         [captureManager startCaptureWithDevice: fDevice];
@@ -1342,7 +1342,7 @@ void GrMtlGpu::testingOnly_startCapture() {
 }
 
 void GrMtlGpu::testingOnly_endCapture() {
-    if (@available(macOS 10.13, iOS 11.0, *)) {
+    if (@available(macOS 10.13, iOS 11.0, tvOS 11.0, *)) {
         MTLCaptureManager* captureManager = [MTLCaptureManager sharedCaptureManager];
         [captureManager stopCapture];
     }

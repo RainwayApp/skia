@@ -57,7 +57,7 @@ void GrMtlCaps::initFeatureSet(MTLFeatureSet featureSet) {
 #endif
 
     // iOS Family group 3
-#if defined(SK_BUILD_FOR_IOS) && !defined(TARGET_OS_TV)
+#if defined(SK_BUILD_FOR_IOS) && !TARGET_OS_TV
     if (@available(iOS 10.0, *)) {
         if (MTLFeatureSet_iOS_GPUFamily3_v2 == featureSet) {
             fPlatform = Platform::kIOS;
@@ -124,7 +124,7 @@ void GrMtlCaps::initFeatureSet(MTLFeatureSet featureSet) {
     }
 #endif
 
-#if defined(TARGET_OS_TV)
+#if TARGET_OS_TV
     if (@available(tvOS 12.0, *)) {
         if (MTLFeatureSet_tvOS_GPUFamily2_v2 == featureSet) {
             fPlatform = Platform::kIOS;

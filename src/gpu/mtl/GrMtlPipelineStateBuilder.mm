@@ -134,7 +134,7 @@ static inline MTLVertexFormat attribute_type_to_mtlformat(GrVertexAttribType typ
         case kFloat4_GrVertexAttribType:
             return MTLVertexFormatFloat4;
         case kHalf_GrVertexAttribType:
-            if (@available(macOS 10.13, iOS 11.0, *)) {
+            if (@available(macOS 10.13, iOS 11.0, tvOS 11.0, *)) {
                 return MTLVertexFormatHalf;
             } else {
                 return MTLVertexFormatInvalid;
@@ -152,7 +152,7 @@ static inline MTLVertexFormat attribute_type_to_mtlformat(GrVertexAttribType typ
         case kInt4_GrVertexAttribType:
             return MTLVertexFormatInt4;
         case kByte_GrVertexAttribType:
-            if (@available(macOS 10.13, iOS 11.0, *)) {
+            if (@available(macOS 10.13, iOS 11.0, tvOS 11.0, *)) {
                 return MTLVertexFormatChar;
             } else {
                 return MTLVertexFormatInvalid;
@@ -164,7 +164,7 @@ static inline MTLVertexFormat attribute_type_to_mtlformat(GrVertexAttribType typ
         case kByte4_GrVertexAttribType:
             return MTLVertexFormatChar4;
         case kUByte_GrVertexAttribType:
-            if (@available(macOS 10.13, iOS 11.0, *)) {
+            if (@available(macOS 10.13, iOS 11.0, tvOS 11.0, *)) {
                 return MTLVertexFormatUChar;
             } else {
                 return MTLVertexFormatInvalid;
@@ -176,7 +176,7 @@ static inline MTLVertexFormat attribute_type_to_mtlformat(GrVertexAttribType typ
         case kUByte4_GrVertexAttribType:
             return MTLVertexFormatUChar4;
         case kUByte_norm_GrVertexAttribType:
-            if (@available(macOS 10.13, iOS 11.0, *)) {
+            if (@available(macOS 10.13, iOS 11.0, tvOS 11.0, *)) {
                 return MTLVertexFormatUCharNormalized;
             } else {
                 return MTLVertexFormatInvalid;
@@ -196,7 +196,7 @@ static inline MTLVertexFormat attribute_type_to_mtlformat(GrVertexAttribType typ
         case kUint_GrVertexAttribType:
             return MTLVertexFormatUInt;
         case kUShort_norm_GrVertexAttribType:
-            if (@available(macOS 10.13, iOS 11.0, *)) {
+            if (@available(macOS 10.13, iOS 11.0, tvOS 11.0, *)) {
                 return MTLVertexFormatUShortNormalized;
             } else {
                 return MTLVertexFormatInvalid;
@@ -298,25 +298,25 @@ static MTLBlendFactor blend_coeff_to_mtl_blend(GrBlendCoeff coeff) {
         case kIConstA_GrBlendCoeff:
             return MTLBlendFactorOneMinusBlendAlpha;
         case kS2C_GrBlendCoeff:
-            if (@available(macOS 10.12, iOS 11.0, *)) {
+            if (@available(macOS 10.12, iOS 11.0, tvOS 11.0, *)) {
                 return MTLBlendFactorSource1Color;
             } else {
                 return MTLBlendFactorZero;
             }
         case kIS2C_GrBlendCoeff:
-            if (@available(macOS 10.12, iOS 11.0, *)) {
+            if (@available(macOS 10.12, iOS 11.0, tvOS 11.0, *)) {
                 return MTLBlendFactorOneMinusSource1Color;
             } else {
                 return MTLBlendFactorZero;
             }
         case kS2A_GrBlendCoeff:
-            if (@available(macOS 10.12, iOS 11.0, *)) {
+            if (@available(macOS 10.12, iOS 11.0, tvOS 11.0, *)) {
                 return MTLBlendFactorSource1Alpha;
             } else {
                 return MTLBlendFactorZero;
             }
         case kIS2A_GrBlendCoeff:
-            if (@available(macOS 10.12, iOS 11.0, *)) {
+            if (@available(macOS 10.12, iOS 11.0, tvOS 11.0, *)) {
                 return MTLBlendFactorOneMinusSource1Alpha;
             } else {
                 return MTLBlendFactorZero;
