@@ -657,6 +657,8 @@ optional("gpu") {
       sources += [ "src/gpu/gl/mac/GrGLMakeNativeInterface_mac.cpp" ]
     } else if (is_ios) {
       sources += [ "src/gpu/gl/iOS/GrGLMakeNativeInterface_iOS.cpp" ]
+	} else if (is_tvos) {
+    sources += [ "src/gpu/gl/tvOS/GrGLMakeNativeInterface_tvOS.cpp" ]
     } else if (is_win) {
       sources += [ "src/gpu/gl/win/GrGLMakeNativeInterface_win.cpp" ]
       if (target_cpu != "arm64") {
