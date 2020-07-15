@@ -83,11 +83,22 @@ private:
     std::unique_ptr<VarDeclarations> convertVarDeclarations(const ASTNode& decl,
                                                             Variable::Storage storage);
     void convertFunction(const ASTNode& f);
+    std::unique_ptr<Statement> convertSingleStatement(const ASTNode& statement);
     std::unique_ptr<Statement> convertStatement(const ASTNode& statement);
     std::unique_ptr<Expression> convertExpression(const ASTNode& expression);
     std::unique_ptr<ModifiersDeclaration> convertModifiersDeclaration(const ASTNode& m);
 
     const Type* convertType(const ASTNode& type);
+    std::unique_ptr<Expression> inlineExpression(int offset,
+                                                 std::map<const Variable*, const Variable*>* varMap,
+                                                 const Expression& expression);
+    std::unique_ptr<Statement> inlineStatement(int offset,
+                                               std::map<const Variable*, const Variable*>* varMap,
+                                               const Variable* returnVar,
+                                               bool haveEarlyReturns,
+                                               const Statement& statement);
+    std::unique_ptr<Expression> inlineCall(int offset, const FunctionDefinition& function,
+                                           std::vector<std::unique_ptr<Expression>> arguments);
     std::unique_ptr<Expression> call(int offset,
                                      const FunctionDeclaration& function,
                                      std::vector<std::unique_ptr<Expression>> arguments);
@@ -145,7 +156,6 @@ private:
     std::unique_ptr<Block> applyInvocationIDWorkaround(std::unique_ptr<Block> main);
     // returns a statement which converts sk_Position from device to normalized coordinates
     std::unique_ptr<Statement> getNormalizeSkPositionCode();
-    void removeSampleMask(std::vector<std::unique_ptr<ProgramElement>>* out);
 
     void checkValid(const Expression& expr);
     void setRefKind(const Expression& expr, VariableReference::RefKind kind);
@@ -157,15 +167,14 @@ private:
     std::unordered_map<String, Program::Settings::Value> fCapsMap;
     std::shared_ptr<SymbolTable> fRootSymbolTable;
     std::shared_ptr<SymbolTable> fSymbolTable;
+    // additional statements that need to be inserted before the one that convertStatement is
+    // currently working on
+    std::vector<std::unique_ptr<Statement>> fExtraStatements;
     // Symbols which have definitions in the include files. The bool tells us whether this
     // intrinsic has been included already.
-    std::map<StringFragment, std::pair<std::unique_ptr<ProgramElement>, bool>>* fIntrinsics = nullptr;
-    // holds extra temp variable declarations needed for the current function
-    std::vector<std::unique_ptr<Statement>> fExtraVars;
+    std::map<String, std::pair<std::unique_ptr<ProgramElement>, bool>>* fIntrinsics = nullptr;
     int fLoopLevel;
     int fSwitchLevel;
-    // count of temporary variables we have created
-    int fTmpCount;
     ErrorReporter& fErrors;
     int fInvocations;
     std::vector<std::unique_ptr<ProgramElement>>* fProgramElements;
@@ -173,7 +182,8 @@ private:
     Variable* fRTAdjust;
     Variable* fRTAdjustInterfaceBlock;
     int fRTAdjustFieldIndex;
-    bool fStarted = false;
+    int fInlineVarCounter;
+    bool fCanInline = true;
 
     friend class AutoSymbolTable;
     friend class AutoLoopLevel;

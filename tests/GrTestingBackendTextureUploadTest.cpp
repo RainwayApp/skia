@@ -5,14 +5,21 @@
  * found in the LICENSE file.
  */
 
+#include "include/gpu/GrDirectContext.h"
 #include "src/core/SkAutoPixmapStorage.h"
 #include "src/gpu/GrContextPriv.h"
 #include "src/gpu/GrImageInfo.h"
+#include "src/gpu/GrProxyProvider.h"
+#include "src/gpu/GrSurfaceContext.h"
 #include "tests/Test.h"
 #include "tests/TestUtils.h"
 
 void testing_only_texture_test(skiatest::Reporter* reporter, GrContext* context, SkColorType ct,
                                GrRenderable renderable, bool doDataUpload, GrMipMapped mipMapped) {
+    auto direct = context->asDirectContext();
+    if (!direct) {
+        return;
+    }
 
     const int kWidth = 16;
     const int kHeight = 16;
@@ -23,11 +30,11 @@ void testing_only_texture_test(skiatest::Reporter* reporter, GrContext* context,
     expectedPixels.alloc(ii);
     actualPixels.alloc(ii);
 
-    const GrCaps* caps = context->priv().caps();
+    const GrCaps* caps = direct->priv().caps();
 
     GrColorType grCT = SkColorTypeToGrColorType(ct);
 
-    GrBackendFormat backendFormat = context->defaultBackendFormat(ct, renderable);
+    GrBackendFormat backendFormat = direct->defaultBackendFormat(ct, renderable);
     if (!backendFormat.isValid()) {
         return;
     }
@@ -39,11 +46,11 @@ void testing_only_texture_test(skiatest::Reporter* reporter, GrContext* context,
 
         FillPixelData(kWidth, kHeight, expectedPixels.writable_addr32(0, 0));
 
-        backendTex = context->createBackendTexture(&expectedPixels, 1,
-                                                   renderable, GrProtected::kNo);
+        backendTex = direct->createBackendTexture(&expectedPixels, 1,
+                                                  renderable, GrProtected::kNo);
     } else {
-        backendTex = context->createBackendTexture(kWidth, kHeight, ct, SkColors::kTransparent,
-                                                   mipMapped, renderable, GrProtected::kNo);
+        backendTex = direct->createBackendTexture(kWidth, kHeight, ct, SkColors::kTransparent,
+                                                  mipMapped, renderable, GrProtected::kNo);
 
         size_t allocSize = SkAutoPixmapStorage::AllocSize(ii, nullptr);
         // createBackendTexture will fill the texture with 0's if no data is provided, so
@@ -62,23 +69,23 @@ void testing_only_texture_test(skiatest::Reporter* reporter, GrContext* context,
 
     sk_sp<GrTextureProxy> wrappedProxy;
     if (GrRenderable::kYes == renderable) {
-        wrappedProxy = context->priv().proxyProvider()->wrapRenderableBackendTexture(
-                backendTex, kTopLeft_GrSurfaceOrigin, 1, grCT, kAdopt_GrWrapOwnership,
-                GrWrapCacheable::kNo);
+        wrappedProxy = direct->priv().proxyProvider()->wrapRenderableBackendTexture(
+                backendTex, 1, kAdopt_GrWrapOwnership, GrWrapCacheable::kNo, nullptr);
     } else {
-        wrappedProxy = context->priv().proxyProvider()->wrapBackendTexture(
-                backendTex, grCT, kTopLeft_GrSurfaceOrigin, kAdopt_GrWrapOwnership,
-                GrWrapCacheable::kNo, GrIOType::kRW_GrIOType);
+        wrappedProxy = direct->priv().proxyProvider()->wrapBackendTexture(
+                backendTex, kAdopt_GrWrapOwnership, GrWrapCacheable::kNo, GrIOType::kRW_GrIOType);
     }
     REPORTER_ASSERT(reporter, wrappedProxy);
 
-    auto surfaceContext = GrSurfaceContext::Make(context, std::move(wrappedProxy), grCT,
+    GrSwizzle swizzle = direct->priv().caps()->getReadSwizzle(wrappedProxy->backendFormat(), grCT);
+    GrSurfaceProxyView view(std::move(wrappedProxy), kTopLeft_GrSurfaceOrigin, swizzle);
+    auto surfaceContext = GrSurfaceContext::Make(direct, std::move(view), grCT,
                                                  kPremul_SkAlphaType, nullptr);
     REPORTER_ASSERT(reporter, surfaceContext);
 
     bool result = surfaceContext->readPixels({grCT, kPremul_SkAlphaType, nullptr, kWidth, kHeight},
                                              actualPixels.writable_addr(), actualPixels.rowBytes(),
-                                             {0, 0}, context);
+                                             {0, 0}, direct);
 
     REPORTER_ASSERT(reporter, result);
     REPORTER_ASSERT(reporter,
@@ -90,11 +97,11 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(GrTestingBackendTextureUploadTest, reporter, 
     for (auto colorType: { kRGBA_8888_SkColorType, kBGRA_8888_SkColorType }) {
         for (auto renderable: { GrRenderable::kYes, GrRenderable::kNo }) {
             for (bool doDataUpload: {true, false}) {
-                testing_only_texture_test(reporter, ctxInfo.grContext(), colorType,
+                testing_only_texture_test(reporter, ctxInfo.directContext(), colorType,
                                           renderable, doDataUpload, GrMipMapped::kNo);
 
                 if (!doDataUpload) {
-                    testing_only_texture_test(reporter, ctxInfo.grContext(), colorType,
+                    testing_only_texture_test(reporter, ctxInfo.directContext(), colorType,
                                               renderable, doDataUpload, GrMipMapped::kYes);
                 }
             }

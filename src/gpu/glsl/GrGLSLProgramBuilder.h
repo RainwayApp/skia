@@ -54,10 +54,11 @@ public:
         return fRenderTarget->renderTargetPriv().getSampleLocations().count();
     }
     const SkTArray<SkPoint>& getSampleLocations() const {
+        SkASSERT(GrProcessor::CustomFeatures::kSampleLocations & fProgramInfo.requestedFeatures());
         return fRenderTarget->renderTargetPriv().getSampleLocations();
     }
 
-    const GrProgramDesc* desc() const { return fDesc; }
+    const GrProgramDesc& desc() const { return fDesc; }
 
     void appendUniformDecls(GrShaderFlags visibility, SkString*) const;
 
@@ -104,19 +105,17 @@ public:
     int fStageIndex;
 
     const GrRenderTarget*        fRenderTarget; // TODO: remove this
+    const GrProgramDesc&         fDesc;
     const GrProgramInfo&         fProgramInfo;
-
-    const GrProgramDesc*         fDesc;
 
     GrGLSLBuiltinUniformHandles  fUniformHandles;
 
     std::unique_ptr<GrGLSLPrimitiveProcessor> fGeometryProcessor;
     std::unique_ptr<GrGLSLXferProcessor> fXferProcessor;
     std::unique_ptr<std::unique_ptr<GrGLSLFragmentProcessor>[]> fFragmentProcessors;
-    int fFragmentProcessorCnt;
 
 protected:
-    explicit GrGLSLProgramBuilder(GrRenderTarget*, const GrProgramInfo&, const GrProgramDesc*);
+    explicit GrGLSLProgramBuilder(GrRenderTarget*, const GrProgramDesc&, const GrProgramInfo&);
 
     void addFeature(GrShaderFlags shaders, uint32_t featureBit, const char* extensionName);
 
@@ -154,14 +153,13 @@ private:
 
     void emitAndInstallPrimProc(SkString* outputColor, SkString* outputCoverage);
     void emitAndInstallFragProcs(SkString* colorInOut, SkString* coverageInOut);
-    SkString emitAndInstallFragProc(const GrFragmentProcessor&,
-                                    int index,
-                                    int transformedCoordVarsIdx,
-                                    const SkString& input,
-                                    SkString output,
-                                    SkTArray<std::unique_ptr<GrGLSLFragmentProcessor>>*);
+    SkString emitFragProc(const GrFragmentProcessor&,
+                          GrGLSLFragmentProcessor&,
+                          int transformedCoordVarsIdx,
+                          const SkString& input,
+                          SkString output);
     void emitAndInstallXferProc(const SkString& colorIn, const SkString& coverageIn);
-    SamplerHandle emitSampler(const GrSurfaceProxy*, GrSamplerState, const GrSwizzle&,
+    SamplerHandle emitSampler(const GrBackendFormat&, GrSamplerState, const GrSwizzle&,
                               const char* name);
     bool checkSamplerCounts();
 
@@ -173,7 +171,7 @@ private:
 
     // These are used to check that we don't excede the allowable number of resources in a shader.
     int fNumFragmentSamplers;
-    SkSTArray<4, GrGLSLPrimitiveProcessor::TransformVar> fTransformedCoordVars;
+    SkSTArray<4, GrShaderVar> fTransformedCoordVars;
 };
 
 #endif

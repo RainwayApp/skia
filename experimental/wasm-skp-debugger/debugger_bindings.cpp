@@ -22,7 +22,7 @@
 #include <emscripten.h>
 #include <emscripten/bind.h>
 
-#if SK_SUPPORT_GPU
+#ifdef SK_GL
 #include "include/gpu/GrBackendSurface.h"
 #include "include/gpu/GrContext.h"
 #include "include/gpu/gl/GrGLInterface.h"
@@ -157,6 +157,12 @@ class SkpDebugPlayer {
       }
       fLayerManager->setClipVizColor(SkColor(color));
     }
+    void setAndroidClipViz(bool on) {
+      for (int i=0; i < frames.size(); i++) {
+        frames[i]->setAndroidClipViz(on);
+      }
+      // doesn't matter in layers
+    }
     // The two operations below only apply to the current frame, because they concern the command
     // list, which is unique to each frame.
     void deleteCommand(int index) {
@@ -242,8 +248,8 @@ class SkpDebugPlayer {
     }
 
     // return a list of layer draw events that happened at the beginning of this frame.
-    std::vector<DebugLayerManager::DrawEventSummary> getLayerDrawEvents() {
-      return fLayerManager->summarizeEvents(fp);
+    std::vector<DebugLayerManager::LayerSummary> getLayerSummaries() {
+      return fLayerManager->summarizeLayers(fp);
     }
 
     // When set to a valid layer index, causes this class to playback the layer draw event at nodeId
@@ -315,6 +321,7 @@ class SkpDebugPlayer {
           debugCanvas->setOverdrawViz(false);
           debugCanvas->setDrawGpuOpBounds(false);
           debugCanvas->setClipVizColor(SK_ColorTRANSPARENT);
+          debugCanvas->setAndroidClipViz(false);
           frames.push_back(std::move(debugCanvas));
           i++;
         }
@@ -362,7 +369,7 @@ class SkpDebugPlayer {
       int fInspectedLayer = -1;
 };
 
-#if SK_SUPPORT_GPU
+#ifdef SK_GL
 sk_sp<GrContext> MakeGrContext(EMSCRIPTEN_WEBGL_CONTEXT_HANDLE context)
 {
     EMSCRIPTEN_RESULT r = emscripten_webgl_make_context_current(context);
@@ -438,7 +445,7 @@ EMSCRIPTEN_BINDINGS(my_module) {
     .function("getImageResource",     &SkpDebugPlayer::getImageResource)
     .function("getImageCount",        &SkpDebugPlayer::getImageCount)
     .function("getImageInfo",         &SkpDebugPlayer::getImageInfo)
-    .function("getLayerDrawEvents",   &SkpDebugPlayer::getLayerDrawEvents)
+    .function("getLayerSummaries",    &SkpDebugPlayer::getLayerSummaries)
     .function("getSize",              &SkpDebugPlayer::getSize)
     .function("jsonCommandList",      &SkpDebugPlayer::jsonCommandList, allow_raw_pointers())
     .function("lastCommandInfo",      &SkpDebugPlayer::lastCommandInfo)
@@ -447,7 +454,8 @@ EMSCRIPTEN_BINDINGS(my_module) {
     .function("setCommandVisibility", &SkpDebugPlayer::setCommandVisibility)
     .function("setGpuOpBounds",       &SkpDebugPlayer::setGpuOpBounds)
     .function("setInspectedLayer",    &SkpDebugPlayer::setInspectedLayer)
-    .function("setOverdrawVis",       &SkpDebugPlayer::setOverdrawVis);
+    .function("setOverdrawVis",       &SkpDebugPlayer::setOverdrawVis)
+    .function("setAndroidClipViz",    &SkpDebugPlayer::setAndroidClipViz);
 
   // Structs used as arguments or returns to the functions above
   value_object<SkIRect>("SkIRect")
@@ -457,13 +465,13 @@ EMSCRIPTEN_BINDINGS(my_module) {
       .field("fBottom", &SkIRect::fBottom);
   // emscripten provided the following convenience function for binding vector<T>
   // https://emscripten.org/docs/api_reference/bind.h.html#_CPPv415register_vectorPKc
-  register_vector<DebugLayerManager::DrawEventSummary>("VectorDrawEventSummary");
-  value_object<DebugLayerManager::DrawEventSummary>("DebugLayerManager::DrawEventSummary")
-    .field("nodeId",       &DebugLayerManager::DrawEventSummary::nodeId)
-    .field("fullRedraw",   &DebugLayerManager::DrawEventSummary::fullRedraw)
-    .field("commandCount", &DebugLayerManager::DrawEventSummary::commandCount)
-    .field("layerWidth",   &DebugLayerManager::DrawEventSummary::layerWidth)
-    .field("layerHeight",  &DebugLayerManager::DrawEventSummary::layerHeight);
+  register_vector<DebugLayerManager::LayerSummary>("VectorLayerSummary");
+  value_object<DebugLayerManager::LayerSummary>("DebugLayerManager::LayerSummary")
+    .field("nodeId",            &DebugLayerManager::LayerSummary::nodeId)
+    .field("frameOfLastUpdate", &DebugLayerManager::LayerSummary::frameOfLastUpdate)
+    .field("fullRedraw",        &DebugLayerManager::LayerSummary::fullRedraw)
+    .field("layerWidth",        &DebugLayerManager::LayerSummary::layerWidth)
+    .field("layerHeight",       &DebugLayerManager::LayerSummary::layerHeight);
 
   // Symbols needed by cpu.js to perform surface creation and flushing.
   enum_<SkColorType>("ColorType")
@@ -490,7 +498,7 @@ EMSCRIPTEN_BINDINGS(my_module) {
     .smart_ptr<sk_sp<SkSurface>>("sk_sp<SkSurface>")
     .function("width", &SkSurface::width)
     .function("height", &SkSurface::height)
-    .function("_flush", select_overload<void()>(&SkSurface::flush))
+    .function("_flush", select_overload<void()>(&SkSurface::flushAndSubmit))
     .function("getCanvas", &SkSurface::getCanvas, allow_raw_pointers());
   class_<SkCanvas>("SkCanvas")
     .function("clear", optional_override([](SkCanvas& self, JSColor color)->void {
@@ -499,7 +507,7 @@ EMSCRIPTEN_BINDINGS(my_module) {
       self.clear(SkColor(color));
     }));
 
-  #if SK_SUPPORT_GPU
+  #ifdef SK_GL
     class_<GrContext>("GrContext")
         .smart_ptr<sk_sp<GrContext>>("sk_sp<GrContext>");
     function("currentContext", &emscripten_webgl_get_current_context);

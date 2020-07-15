@@ -17,6 +17,7 @@
 #include "include/core/SkSurface.h"
 #include "include/core/SkTextBlob.h"
 #include "include/core/SkTypeface.h"
+#include "include/gpu/GrDirectContext.h"
 #include "src/core/SkGlyphRun.h"
 #include "tools/fonts/RandomScalerContext.h"
 
@@ -28,6 +29,8 @@
 
 #include "include/gpu/GrContext.h"
 #include "src/gpu/GrContextPriv.h"
+#include "src/gpu/text/GrAtlasManager.h"
+#include "src/gpu/text/GrTextBlobCache.h"
 
 static void draw(SkCanvas* canvas, int redraw, const SkTArray<sk_sp<SkTextBlob>>& blobs) {
     int yOffset = 0;
@@ -49,6 +52,15 @@ static void setup_always_evict_atlas(GrContext* context) {
     context->priv().getAtlasManager()->setAtlasDimensionsToMinimum_ForTesting();
 }
 
+class GrTextBlobTestingPeer {
+public:
+    static void SetBudget(GrTextBlobCache* cache, size_t budget) {
+        SkAutoMutexExclusive lock{cache->fMutex};
+        cache->fSizeBudget = budget;
+        cache->internalCheckPurge();
+    }
+};
+
 // This test hammers the GPU textblobcache and font atlas
 static void text_blob_cache_inner(skiatest::Reporter* reporter, GrContext* context,
                                   int maxTotalText, int maxGlyphID, int maxFamilies, bool normal,
@@ -60,7 +72,7 @@ static void text_blob_cache_inner(skiatest::Reporter* reporter, GrContext* conte
     // configure our context for maximum stressing of cache and atlas
     if (stressTest) {
         setup_always_evict_atlas(context);
-        context->priv().testingOnly_setTextBlobCacheLimit(0);
+        GrTextBlobTestingPeer::SetBudget(context->priv().getTextBlobCache(), 0);
     }
 
     SkImageInfo info = SkImageInfo::Make(kWidth, kHeight, kRGBA_8888_SkColorType,
@@ -75,7 +87,7 @@ static void text_blob_cache_inner(skiatest::Reporter* reporter, GrContext* conte
 
     sk_sp<SkFontMgr> fm(SkFontMgr::RefDefault());
 
-    int count = SkMin32(fm->countFamilies(), maxFamilies);
+    int count = std::min(fm->countFamilies(), maxFamilies);
 
     // make a ton of text
     SkAutoTArray<uint16_t> text(maxTotalText);
@@ -159,19 +171,19 @@ static void text_blob_cache_inner(skiatest::Reporter* reporter, GrContext* conte
 }
 
 DEF_GPUTEST_FOR_MOCK_CONTEXT(TextBlobCache, reporter, ctxInfo) {
-    text_blob_cache_inner(reporter, ctxInfo.grContext(), 1024, 256, 30, true, false);
+    text_blob_cache_inner(reporter, ctxInfo.directContext(), 1024, 256, 30, true, false);
 }
 
 DEF_GPUTEST_FOR_MOCK_CONTEXT(TextBlobStressCache, reporter, ctxInfo) {
-    text_blob_cache_inner(reporter, ctxInfo.grContext(), 256, 256, 10, true, true);
+    text_blob_cache_inner(reporter, ctxInfo.directContext(), 256, 256, 10, true, true);
 }
 
 DEF_GPUTEST_FOR_MOCK_CONTEXT(TextBlobAbnormal, reporter, ctxInfo) {
-    text_blob_cache_inner(reporter, ctxInfo.grContext(), 256, 256, 10, false, false);
+    text_blob_cache_inner(reporter, ctxInfo.directContext(), 256, 256, 10, false, false);
 }
 
 DEF_GPUTEST_FOR_MOCK_CONTEXT(TextBlobStressAbnormal, reporter, ctxInfo) {
-    text_blob_cache_inner(reporter, ctxInfo.grContext(), 256, 256, 10, false, true);
+    text_blob_cache_inner(reporter, ctxInfo.directContext(), 256, 256, 10, false, true);
 }
 
 static const int kScreenDim = 160;
@@ -229,6 +241,51 @@ static sk_sp<SkTextBlob> make_blob() {
     return builder.make();
 }
 
+// Turned off to pass on android and ios devices, which were running out of memory..
+#if 0
+static sk_sp<SkTextBlob> make_large_blob() {
+    auto tf = SkTypeface::MakeFromName("Roboto2-Regular", SkFontStyle());
+    SkFont font;
+    font.setTypeface(tf);
+    font.setSubpixel(false);
+    font.setEdging(SkFont::Edging::kAlias);
+    font.setSize(24);
+
+    const int mallocSize = 0x3c3c3bd; // x86 size
+    std::unique_ptr<char[]> text{new char[mallocSize + 1]};
+    if (text == nullptr) {
+        return nullptr;
+    }
+    for (int i = 0; i < mallocSize; i++) {
+        text[i] = 'x';
+    }
+    text[mallocSize] = 0;
+
+    static const int maxGlyphLen = mallocSize;
+    std::unique_ptr<SkGlyphID[]> glyphs{new SkGlyphID[maxGlyphLen]};
+    int glyphCount =
+            font.textToGlyphs(
+                    text.get(), mallocSize, SkTextEncoding::kUTF8, glyphs.get(), maxGlyphLen);
+    SkTextBlobBuilder builder;
+    const auto& runBuffer = builder.allocRun(font, glyphCount, 0, 0);
+    for (int i = 0; i < glyphCount; i++) {
+        runBuffer.glyphs[i] = glyphs[i];
+    }
+    return builder.make();
+}
+
+DEF_GPUTEST_FOR_RENDERING_CONTEXTS(TextBlobIntegerOverflowTest, reporter, ctxInfo) {
+    auto grContext = ctxInfo.grContext();
+    const SkImageInfo info =
+            SkImageInfo::Make(kScreenDim, kScreenDim, kN32_SkColorType, kPremul_SkAlphaType);
+    auto surface = SkSurface::MakeRenderTarget(grContext, SkBudgeted::kNo, info);
+
+    auto blob = make_large_blob();
+    int y = 40;
+    SkBitmap base = draw_blob(blob.get(), surface.get(), {40, y + 0.0f});
+}
+#endif
+
 static const bool kDumpPngs = true;
 // dump pngs needs a "good" and a "bad" directory to put the results in. This allows the use of the
 // skdiff tool to visualize the differences.
@@ -241,10 +298,10 @@ void write_png(const std::string& filename, const SkBitmap& bitmap) {
 }
 
 DEF_GPUTEST_FOR_RENDERING_CONTEXTS(TextBlobJaggedGlyph, reporter, ctxInfo) {
-    auto grContext = ctxInfo.grContext();
+    auto direct = ctxInfo.directContext();
     const SkImageInfo info =
             SkImageInfo::Make(kScreenDim, kScreenDim, kN32_SkColorType, kPremul_SkAlphaType);
-    auto surface = SkSurface::MakeRenderTarget(grContext, SkBudgeted::kNo, info);
+    auto surface = SkSurface::MakeRenderTarget(direct, SkBudgeted::kNo, info);
 
     auto blob = make_blob();
 
@@ -297,10 +354,10 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(TextBlobJaggedGlyph, reporter, ctxInfo) {
 }
 
 DEF_GPUTEST_FOR_RENDERING_CONTEXTS(TextBlobSmoothScroll, reporter, ctxInfo) {
-    auto grContext = ctxInfo.grContext();
+    auto direct = ctxInfo.directContext();
     const SkImageInfo info =
             SkImageInfo::Make(kScreenDim, kScreenDim, kN32_SkColorType, kPremul_SkAlphaType);
-    auto surface = SkSurface::MakeRenderTarget(grContext, SkBudgeted::kNo, info);
+    auto surface = SkSurface::MakeRenderTarget(direct, SkBudgeted::kNo, info);
 
     auto movingBlob = make_blob();
 

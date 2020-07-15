@@ -94,7 +94,7 @@ public:
      * Based on 'type', writes the s (signed), u (unsigned), or f (float) instruction.
      */
     void writeTypedInstruction(const Type& type, ByteCodeInstruction s, ByteCodeInstruction u,
-                               ByteCodeInstruction f, int count, bool writeCount = true);
+                               ByteCodeInstruction f, int count);
 
     static int SlotCount(const Type& type);
 
@@ -138,30 +138,31 @@ private:
 
     // Intrinsics which do not simply map to a single opcode
     enum class SpecialIntrinsic {
+        kAll,
+        kAny,
+        kClamp,
         kDot,
+        kLength,
+        kMax,
+        kMin,
+        kMix,
+        kNormalize,
+        kSample,
+        kSaturate,
     };
 
     struct Intrinsic {
-        Intrinsic(ByteCodeInstruction instruction)
-            : fIsSpecial(false)
-            , fValue(instruction) {}
+        Intrinsic(SpecialIntrinsic    s) : is_special(true), special(s) {}
+        Intrinsic(ByteCodeInstruction i) : Intrinsic(i, i, i) {}
+        Intrinsic(ByteCodeInstruction f,
+                  ByteCodeInstruction s,
+                  ByteCodeInstruction u) : is_special(false), inst_f(f), inst_s(s), inst_u(u) {}
 
-        Intrinsic(SpecialIntrinsic special)
-            : fIsSpecial(true)
-            , fValue(special) {}
-
-        bool fIsSpecial;
-
-        union Value {
-            Value(ByteCodeInstruction instruction)
-                : fInstruction(instruction) {}
-
-            Value(SpecialIntrinsic special)
-                : fSpecial(special) {}
-
-            ByteCodeInstruction fInstruction;
-            SpecialIntrinsic fSpecial;
-        } fValue;
+        bool                is_special;
+        SpecialIntrinsic    special;
+        ByteCodeInstruction inst_f;
+        ByteCodeInstruction inst_s;
+        ByteCodeInstruction inst_u;
     };
 
 
@@ -171,6 +172,7 @@ private:
         kLocal,    // include parameters
         kGlobal,   // non-uniform globals
         kUniform,  // uniform globals
+        kChildFP,  // child fragment processors
     };
 
     struct Location {
@@ -180,10 +182,14 @@ private:
         // Not really invalid, but a "safe" placeholder to be more explicit at call-sites
         static Location MakeInvalid() { return { 0, Storage::kLocal }; }
 
-        Location makeOnStack() { return { -1, fStorage }; }
+        Location makeOnStack() {
+            SkASSERT(fStorage != Storage::kChildFP);
+            return { -1, fStorage };
+        }
         bool isOnStack() const { return fSlot < 0; }
 
         Location operator+(int offset) {
+            SkASSERT(fStorage != Storage::kChildFP);
             SkASSERT(fSlot >= 0);
             return { fSlot + offset, fStorage };
         }
@@ -195,8 +201,9 @@ private:
                 case Storage::kLocal:   return local;
                 case Storage::kGlobal:  return global;
                 case Storage::kUniform: return uniform;
+                case Storage::kChildFP: ABORT("Trying to load an FP"); break;
             }
-            SkUNREACHABLE;
+            return local;
         }
 
         ByteCodeInstruction selectStore(ByteCodeInstruction local,
@@ -205,6 +212,7 @@ private:
                 case Storage::kLocal:   return local;
                 case Storage::kGlobal:  return global;
                 case Storage::kUniform: ABORT("Trying to store to a uniform"); break;
+                case Storage::kChildFP: ABORT("Trying to store an FP"); break;
             }
             return local;
         }

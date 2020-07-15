@@ -22,126 +22,35 @@ GrStencilSettings GrProgramInfo::nonGLStencilSettings() const {
 }
 
 #ifdef SK_DEBUG
-#include "src/gpu/GrMesh.h"
 #include "src/gpu/GrTexturePriv.h"
 
 void GrProgramInfo::validate(bool flushTime) const {
     if (flushTime) {
         SkASSERT(fPipeline->allProxiesInstantiated());
     }
-
-    if (this->hasDynamicPrimProcTextures()) {
-        SkASSERT(!this->hasFixedPrimProcTextures());
-        SkASSERT(fPrimProc->numTextureSamplers());
-    } else if (this->hasFixedPrimProcTextures()) {
-        SkASSERT(fPrimProc->numTextureSamplers());
-    } else {
-        SkASSERT(!fPrimProc->numTextureSamplers());
-    }
-
-    SkASSERT(!fPipeline->isScissorEnabled() || this->hasFixedScissor() ||
-             this->hasDynamicScissors());
-
-    if (this->hasDynamicPrimProcTextures()) {
-        // Check that, for a given sampler, the properties of the dynamic textures remain
-        // the same for all the meshes
-        for (int s = 0; s < this->primProc().numTextureSamplers(); ++s) {
-            auto dynamicPrimProcTextures = this->dynamicPrimProcTextures(0);
-
-            const GrBackendFormat& format = dynamicPrimProcTextures[s]->backendFormat();
-            GrTextureType type = dynamicPrimProcTextures[s]->backendFormat().textureType();
-            GrPixelConfig config = dynamicPrimProcTextures[s]->config();
-
-            for (int m = 1; m < fNumDynamicStateArrays; ++m) {
-                dynamicPrimProcTextures = this->dynamicPrimProcTextures(m);
-
-                auto testProxy = dynamicPrimProcTextures[s];
-                SkASSERT(testProxy->asTextureProxy());
-                SkASSERT(testProxy->backendFormat() == format);
-                SkASSERT(testProxy->backendFormat().textureType() == type);
-                SkASSERT(testProxy->config() == config);
-            }
-        }
-    }
 }
 
 void GrProgramInfo::checkAllInstantiated() const {
-    if (this->hasFixedPrimProcTextures()) {
-        auto fixedPrimProcTextures = this->fixedPrimProcTextures();
-        for (int s = 0; s < this->primProc().numTextureSamplers(); ++s) {
-            SkASSERT(fixedPrimProcTextures[s]->isInstantiated());
-        }
-    }
-
-    if (this->hasDynamicPrimProcTextures()) {
-        for (int m = 0; m < fNumDynamicStateArrays; ++m) {
-            auto dynamicPrimProcTextures = this->dynamicPrimProcTextures(m);
-            for (int s = 0; s < this->primProc().numTextureSamplers(); ++s) {
-                SkASSERT(dynamicPrimProcTextures[s]->isInstantiated());
-            }
-        }
-    }
+    this->pipeline().visitProxies([](GrSurfaceProxy* proxy, GrMipMapped) {
+        SkASSERT(proxy->isInstantiated());
+        return true;
+    });
 }
 
 void GrProgramInfo::checkMSAAAndMIPSAreResolved() const {
-    auto assertResolved = [](GrTexture* tex, GrSamplerState sampler) {
+    this->pipeline().visitTextureEffects([](const GrTextureEffect& te) {
+        GrTexture* tex = te.texture();
         SkASSERT(tex);
 
         // Ensure mipmaps were all resolved ahead of time by the DAG.
-        if (GrSamplerState::Filter::kMipMap == sampler.filter() &&
+        if (GrSamplerState::Filter::kMipMap == te.samplerState().filter() &&
             (tex->width() != 1 || tex->height() != 1)) {
-            // There are some cases where we might be given a non-mipmapped texture with a mipmap
-            // filter. See skbug.com/7094.
+            // There are some cases where we might be given a non-mipmapped texture with a
+            // mipmap filter. See skbug.com/7094.
             SkASSERT(tex->texturePriv().mipMapped() != GrMipMapped::kYes ||
                      !tex->texturePriv().mipMapsAreDirty());
         }
-    };
-
-    if (this->hasDynamicPrimProcTextures()) {
-        for (int m = 0; m < fNumDynamicStateArrays; ++m) {
-            auto dynamicPrimProcTextures = this->dynamicPrimProcTextures(m);
-
-            for (int s = 0; s < this->primProc().numTextureSamplers(); ++s) {
-                auto* tex = dynamicPrimProcTextures[s]->peekTexture();
-                assertResolved(tex, this->primProc().textureSampler(s).samplerState());
-            }
-        }
-    } else if (this->hasFixedPrimProcTextures()) {
-        auto fixedPrimProcTextures = this->fixedPrimProcTextures();
-
-        for (int s = 0; s < this->primProc().numTextureSamplers(); ++s) {
-            auto* tex = fixedPrimProcTextures[s]->peekTexture();
-            assertResolved(tex, this->primProc().textureSampler(s).samplerState());
-        }
-    }
-
-    for (auto [sampler, fp] : GrFragmentProcessor::PipelineTextureSamplerRange(this->pipeline())) {
-        assertResolved(sampler.peekTexture(), sampler.samplerState());
-    }
-}
-
-void GrProgramInfo::compatibleWithMeshes(const GrMesh meshes[], int meshCount,
-                                         const GrCaps& caps) const {
-    SkASSERT(!fNumDynamicStateArrays || meshCount == fNumDynamicStateArrays);
-
-    for (int i = 0; i < meshCount; ++i) {
-        SkASSERT(fPrimitiveType == meshes[i].primitiveType());
-        if (GrPrimitiveType::kPatches == fPrimitiveType) {
-            SkASSERT(fTessellationPatchVertexCount == meshes[i].tessellationPatchVertexCount());
-        }
-        SkASSERT(fPrimProc->hasVertexAttributes() == SkToBool(meshes[i].vertexBuffer()));
-        SkASSERT(fPrimProc->hasInstanceAttributes() == SkToBool(meshes[i].instanceBuffer()));
-        if (fPipeline->usesConservativeRaster()) {
-            // Conservative raster, by default, only supports triangles. Implementations can
-            // optionally indicate that they also support points and lines, but we don't currently
-            // query or track that info.
-            SkASSERT(GrIsPrimTypeTris(meshes[i].primitiveType()));
-        }
-        SkASSERT(GrPrimitiveType::kPatches != meshes[i].primitiveType() ||
-                 caps.shaderCaps()->tessellationSupport());
-        SkASSERT(GrPrimitiveRestart::kNo == meshes[i].primitiveRestart() ||
-                 caps.usePrimitiveRestart());
-    }
+    });
 }
 
 #endif

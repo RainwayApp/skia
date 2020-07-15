@@ -10,10 +10,12 @@
 #include "include/core/SkColorFilter.h"
 #include "include/core/SkPromiseImageTexture.h"
 #include "include/gpu/GrBackendSurface.h"
-#include "include/gpu/GrTexture.h"
+#include "include/gpu/GrDirectContext.h"
 #include "src/gpu/GrContextPriv.h"
 #include "src/gpu/GrGpu.h"
+#include "src/gpu/GrTexture.h"
 #include "src/image/SkImage_Gpu.h"
+#include "tests/TestUtils.h"
 
 using namespace sk_gpu_test;
 
@@ -142,8 +144,8 @@ static void check_all_flushed_but_not_synced(skiatest::Reporter* reporter,
                                              GrBackendApi api,
                                              int expectedFulfillCnt = 1) {
     DoneBalanceExpectation doneBalanceExpectation = DoneBalanceExpectation::kBalanced;
-    // On Vulkan Done isn't guaranteed to be called until a sync has occurred.
-    if (api == GrBackendApi::kVulkan) {
+    // On Vulkan and D3D Done isn't guaranteed to be called until a sync has occurred.
+    if (api == GrBackendApi::kVulkan || api == GrBackendApi::kDirect3D) {
         doneBalanceExpectation = expectedFulfillCnt == 1
                                          ? DoneBalanceExpectation::kBalancedOrOffByOne
                                          : DoneBalanceExpectation::kUnknown;
@@ -164,7 +166,7 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(PromiseImageTest, reporter, ctxInfo) {
     const int kWidth = 10;
     const int kHeight = 10;
 
-    GrContext* ctx = ctxInfo.grContext();
+    auto ctx = ctxInfo.directContext();
     GrGpu* gpu = ctx->priv().getGpu();
 
     GrBackendTexture backendTex = ctx->createBackendTexture(
@@ -196,7 +198,7 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(PromiseImageTest, reporter, ctxInfo) {
     canvas->drawImage(refImg, 0, 0);
     check_unfulfilled(promiseChecker, reporter);
 
-    surface->flush();
+    surface->flushAndSubmit();
     // We still own the image so we should not have called Release or Done.
     check_only_fulfilled(reporter, promiseChecker);
 
@@ -206,14 +208,14 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(PromiseImageTest, reporter, ctxInfo) {
     canvas->drawImage(refImg, 0, 0);
     canvas->drawImage(refImg, 0, 0);
 
-    surface->flush();
+    surface->flushAndSubmit();
 
     gpu->testingOnly_flushGpuAndSync();
     // Image should still be fulfilled from the first time we drew/flushed it.
     check_only_fulfilled(reporter, promiseChecker);
 
     canvas->drawImage(refImg, 0, 0);
-    surface->flush();
+    surface->flushAndSubmit();
     check_only_fulfilled(reporter, promiseChecker);
 
     canvas->drawImage(refImg, 0, 0);
@@ -221,7 +223,7 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(PromiseImageTest, reporter, ctxInfo) {
     // We no longer own the image but the last draw is still unflushed.
     check_only_fulfilled(reporter, promiseChecker);
 
-    surface->flush();
+    surface->flushAndSubmit();
     // Flushing should have called Release. Depending on the backend and timing it may have called
     // done.
     check_all_flushed_but_not_synced(reporter, promiseChecker, ctx->backend());
@@ -230,102 +232,6 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(PromiseImageTest, reporter, ctxInfo) {
     check_all_done(reporter, promiseChecker);
 
     ctx->deleteBackendTexture(backendTex);
-}
-
-DEF_GPUTEST_FOR_RENDERING_CONTEXTS(PromiseImageTextureReuseDifferentConfig, reporter, ctxInfo) {
-    // Try making two promise SkImages backed by the same texture but with different uses/views.
-    // This will only be testable on backends where a single texture format (8bit red unorm) can
-    // be used for both alpha and gray image color types.
-
-    const int kWidth = 10;
-    const int kHeight = 10;
-
-    GrContext* ctx = ctxInfo.grContext();
-    GrGpu* gpu = ctx->priv().getGpu();
-
-    GrBackendFormat gray8Format  = ctx->defaultBackendFormat(kGray_8_SkColorType,
-                                                             GrRenderable::kNo);
-    GrBackendFormat alpha8Format = ctx->defaultBackendFormat(kAlpha_8_SkColorType,
-                                                             GrRenderable::kNo);
-    if (gray8Format != alpha8Format) {
-        // kGray_8 and kAlpha_8 won't share the same backend texture
-        return;
-    }
-
-    GrBackendTexture grayBackendTex = ctx->createBackendTexture(
-            kWidth, kHeight, gray8Format,
-            SkColors::kTransparent, GrMipMapped::kNo, GrRenderable::kNo, GrProtected::kNo);
-    REPORTER_ASSERT(reporter, grayBackendTex.isValid());
-
-    SkImageInfo info =
-            SkImageInfo::Make(kWidth, kHeight, kRGBA_8888_SkColorType, kPremul_SkAlphaType);
-    sk_sp<SkSurface> surface = SkSurface::MakeRenderTarget(ctx, SkBudgeted::kNo, info);
-    SkCanvas* canvas = surface->getCanvas();
-
-    PromiseTextureChecker promiseChecker(grayBackendTex, reporter, true);
-
-    sk_sp<SkImage> alphaImg(SkImage_Gpu::MakePromiseTexture(
-            ctx, alpha8Format, kWidth, kHeight, GrMipMapped::kNo,
-            kTopLeft_GrSurfaceOrigin, kAlpha_8_SkColorType, kPremul_SkAlphaType, nullptr,
-            PromiseTextureChecker::Fulfill, PromiseTextureChecker::Release,
-            PromiseTextureChecker::Done, &promiseChecker,
-            SkDeferredDisplayListRecorder::PromiseImageApiVersion::kNew));
-    REPORTER_ASSERT(reporter, alphaImg);
-
-    sk_sp<SkImage> grayImg(SkImage_Gpu::MakePromiseTexture(
-            ctx, gray8Format, kWidth, kHeight, GrMipMapped::kNo,
-            kBottomLeft_GrSurfaceOrigin, kGray_8_SkColorType, kOpaque_SkAlphaType, nullptr,
-            PromiseTextureChecker::Fulfill, PromiseTextureChecker::Release,
-            PromiseTextureChecker::Done, &promiseChecker,
-            SkDeferredDisplayListRecorder::PromiseImageApiVersion::kNew));
-    REPORTER_ASSERT(reporter, grayImg);
-
-    canvas->drawImage(alphaImg, 0, 0);
-    canvas->drawImage(grayImg, 1, 1);
-    surface->flush();
-    gpu->testingOnly_flushGpuAndSync();
-    check_only_fulfilled(reporter, promiseChecker, 2);
-
-    // Because they use different backend formats, each image should have created a different
-    // GrTexture and they both should still be cached.
-    ctx->priv().getResourceCache()->purgeAsNeeded();
-
-    auto keys = promiseChecker.uniqueKeys();
-    REPORTER_ASSERT(reporter, keys.count() == 2);
-    for (const auto& key : keys) {
-        auto surf = ctx->priv().resourceProvider()->findByUniqueKey<GrSurface>(key);
-        REPORTER_ASSERT(reporter, surf && surf->asTexture());
-        if (surf && surf->asTexture()) {
-            GrTexture* texture = surf->asTexture();
-
-            // The backend texture should be shared between the two uses
-            REPORTER_ASSERT(reporter, GrBackendTexture::TestingOnly_Equals(
-                                                grayBackendTex, texture->getBackendTexture()));
-
-            // but the view of them from the GrTexture should've been transmuted into the
-            // specific pixel configs
-            REPORTER_ASSERT(reporter, texture->config() == kAlpha_8_as_Red_GrPixelConfig ||
-                                      texture->config() == kGray_8_as_Red_GrPixelConfig);
-        }
-    }
-
-    // Invalidate the backing texture, this should invalidate the keys.
-    promiseChecker.releaseTexture();
-    ctx->priv().getResourceCache()->purgeAsNeeded();
-
-    for (const auto& key : keys) {
-        auto surf = ctx->priv().resourceProvider()->findByUniqueKey<GrSurface>(key);
-        REPORTER_ASSERT(reporter, !surf);
-    }
-    alphaImg.reset();
-    ctx->flush(); // We do this to pick up any unref messages that are sent by unref'ing the image.
-    check_fulfill_and_release_cnts(reporter, promiseChecker, 2,
-                                   ReleaseBalanceExpectation::kUnbalancedByOne,
-                                   DoneBalanceExpectation::kUnbalancedByOne);
-    grayImg.reset();
-    ctx->flush(); // We do this to pick up any unref messages that are sent by unref'ing the image.
-    check_all_done(reporter, promiseChecker, 2);
-    ctx->deleteBackendTexture(grayBackendTex);
 }
 
 DEF_GPUTEST(PromiseImageTextureShutdown, reporter, ctxInfo) {
@@ -349,8 +255,11 @@ DEF_GPUTEST(PromiseImageTextureShutdown, reporter, ctxInfo) {
         auto contextType = static_cast<sk_gpu_test::GrContextFactory::ContextType>(type);
         // These tests are difficult to get working with Vulkan. See http://skbug.com/8705
         // and http://skbug.com/8275
+        // Also problematic on Dawn; see http://skbug.com/10326
+        // And Direct3D, for similar reasons.
         GrBackendApi api = sk_gpu_test::GrContextFactory::ContextTypeBackend(contextType);
-        if (api == GrBackendApi::kVulkan) {
+        if (api == GrBackendApi::kVulkan || api == GrBackendApi::kDawn ||
+            api == GrBackendApi::kDirect3D) {
             continue;
         }
         DeathFn contextKillers[] = {destroy, abandon, releaseResourcesAndAbandon};
@@ -361,8 +270,8 @@ DEF_GPUTEST(PromiseImageTextureShutdown, reporter, ctxInfo) {
                 continue;
             }
 
-            GrBackendTexture backendTex = ctx->createBackendTexture(
-                    kWidth, kHeight, kAlpha_8_SkColorType,
+            GrBackendTexture backendTex;
+            CreateBackendTexture(ctx, &backendTex, kWidth, kHeight, kAlpha_8_SkColorType,
                     SkColors::kTransparent, GrMipMapped::kNo, GrRenderable::kNo, GrProtected::kNo);
             REPORTER_ASSERT(reporter, backendTex.isValid());
 
@@ -386,7 +295,7 @@ DEF_GPUTEST(PromiseImageTextureShutdown, reporter, ctxInfo) {
             // to destroy the context (and instead will release-all-and-abandon).
             surface.reset();
 
-            ctx->flush();
+            ctx->flushAndSubmit();
             contextDeath(&factory, ctx);
 
             check_all_done(reporter, promiseChecker);
@@ -398,7 +307,7 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(PromiseImageTextureFullCache, reporter, ctxIn
     const int kWidth = 10;
     const int kHeight = 10;
 
-    GrContext* ctx = ctxInfo.grContext();
+    auto ctx = ctxInfo.directContext();
 
     GrBackendTexture backendTex = ctx->createBackendTexture(
             kWidth, kHeight, kAlpha_8_SkColorType,
@@ -425,13 +334,10 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(PromiseImageTextureFullCache, reporter, ctxIn
     ctx->setResourceCacheLimit(kMaxBytes);
     SkTArray<sk_sp<GrTexture>> textures;
     for (int i = 0; i < 5; ++i) {
-        GrSurfaceDesc desc;
-        desc.fConfig = kRGBA_8888_GrPixelConfig;
-        desc.fWidth = desc.fHeight = 100;
         auto format = ctx->priv().caps()->getDefaultBackendFormat(GrColorType::kRGBA_8888,
                                                                   GrRenderable::kNo);
         textures.emplace_back(ctx->priv().resourceProvider()->createTexture(
-                desc, format, GrRenderable::kNo, 1, GrMipMapped::kNo, SkBudgeted::kYes,
+                {100, 100}, format, GrRenderable::kNo, 1, GrMipMapped::kNo, SkBudgeted::kYes,
                 GrProtected::kNo));
         REPORTER_ASSERT(reporter, textures[i]);
     }
@@ -444,20 +350,20 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(PromiseImageTextureFullCache, reporter, ctxIn
     // Relying on the asserts in the promiseImageChecker to ensure that fulfills and releases are
     // properly ordered.
     canvas->drawImage(image, 0, 0);
-    surface->flush();
+    surface->flushAndSubmit();
     canvas->drawImage(image, 1, 0);
-    surface->flush();
+    surface->flushAndSubmit();
     canvas->drawImage(image, 2, 0);
-    surface->flush();
+    surface->flushAndSubmit();
     canvas->drawImage(image, 3, 0);
-    surface->flush();
+    surface->flushAndSubmit();
     canvas->drawImage(image, 4, 0);
-    surface->flush();
+    surface->flushAndSubmit();
     canvas->drawImage(image, 5, 0);
-    surface->flush();
+    surface->flushAndSubmit();
     // Must call these to ensure that all callbacks are performed before the checker is destroyed.
     image.reset();
-    ctx->flush();
+    ctx->flushAndSubmit();
     ctx->priv().getGpu()->testingOnly_flushGpuAndSync();
 
     ctx->deleteBackendTexture(backendTex);
@@ -468,12 +374,13 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(PromiseImageNullFulfill, reporter, ctxInfo) {
     const int kWidth = 10;
     const int kHeight = 10;
 
-    GrContext* ctx = ctxInfo.grContext();
+    auto ctx = ctxInfo.directContext();
 
     // Do all this just to get a valid backend format for the image.
-    GrBackendTexture backendTex = ctx->createBackendTexture(
-            kWidth, kHeight, kRGBA_8888_SkColorType,
-            SkColors::kTransparent, GrMipMapped::kNo, GrRenderable::kYes, GrProtected::kNo);
+    GrBackendTexture backendTex;
+    CreateBackendTexture(ctx, &backendTex, kWidth, kHeight, kRGBA_8888_SkColorType,
+                         SkColors::kTransparent, GrMipMapped::kNo, GrRenderable::kYes,
+                         GrProtected::kNo);
     REPORTER_ASSERT(reporter, backendTex.isValid());
     GrBackendFormat backendFormat = backendTex.getBackendFormat();
     REPORTER_ASSERT(reporter, backendFormat.isValid());
@@ -514,7 +421,7 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(PromiseImageNullFulfill, reporter, ctxInfo) {
     canvas->drawRect(SkRect::MakeWH(1,1), paint);
     paint.setShader(nullptr);
     refImg.reset();
-    surface->flush();
+    surface->flushAndSubmit();
     // We should only call each callback once and we should have made all the calls by this point.
     REPORTER_ASSERT(reporter, counts.fFulfillCount == 1);
     REPORTER_ASSERT(reporter, counts.fReleaseCount == 1);

@@ -46,14 +46,14 @@ std::unique_ptr<GrFragmentProcessor> MakeChildFP(GrProcessorTestData*);
 /*
  * GrProcessorTestData is an argument struct to TestCreate functions
  * fTextures are valid textures that can optionally be used to construct
- * TextureSampler. The first texture has config kSkia8888_GrPixelConfig and the second has
- * kAlpha_8_GrPixelConfig. TestCreate functions are also free to create additional textures using
+ * TextureSampler. The first texture has a RGBA8 format and the second has Alpha8 format for the
+ * specific backend API. TestCreate functions are also free to create additional textures using
  * the GrContext.
  */
 class GrProcessorTestData {
 public:
-    using ProxyInfo = std::tuple<sk_sp<GrTextureProxy>, GrColorType, SkAlphaType>;
-    GrProcessorTestData(SkRandom* random, GrContext* context, int numProxies, const ProxyInfo[]);
+    using ViewInfo = std::tuple<GrSurfaceProxyView, GrColorType, SkAlphaType>;
+    GrProcessorTestData(SkRandom* random, GrContext* context, int numProxies, const ViewInfo[]);
 
     GrContext* context() { return fContext; }
     GrResourceProvider* resourceProvider();
@@ -61,14 +61,14 @@ public:
     const GrCaps* caps();
     SkArenaAlloc* allocator() { return fArena.get(); }
 
-    ProxyInfo randomProxy();
-    ProxyInfo randomAlphaOnlyProxy();
+    ViewInfo randomView();
+    ViewInfo randomAlphaOnlyView();
 
     SkRandom* fRandom;
 
 private:
     GrContext* fContext;
-    SkTArray<ProxyInfo> fProxies;
+    SkTArray<ViewInfo> fViews;
     std::unique_ptr<SkArenaAlloc> fArena;
 };
 

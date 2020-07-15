@@ -8,7 +8,8 @@
 #ifndef GrRecordingContextPriv_DEFINED
 #define GrRecordingContextPriv_DEFINED
 
-#include "include/private/GrRecordingContext.h"
+#include "include/gpu/GrRecordingContext.h"
+#include "src/gpu/text/GrSDFTOptions.h"
 
 /** Class that exposes methods to GrRecordingContext that are only intended for use internal to
     Skia. This class is purely a privileged window into GrRecordingContext. It should never have
@@ -27,13 +28,10 @@ public:
 
     GrImageContext* asImageContext() { return fContext->asImageContext(); }
     GrRecordingContext* asRecordingContext() { return fContext->asRecordingContext(); }
-    GrContext* asDirectContext() { return fContext->asDirectContext(); }
 
     // from GrImageContext
     GrProxyProvider* proxyProvider() { return fContext->proxyProvider(); }
     const GrProxyProvider* proxyProvider() const { return fContext->proxyProvider(); }
-
-    bool abandoned() const { return fContext->abandoned(); }
 
     /** This is only useful for debug purposes */
     SkDEBUGCODE(GrSingleOwner* singleOwner() const { return fContext->singleOwner(); } )
@@ -51,11 +49,10 @@ public:
         fContext->recordProgramInfo(programInfo);
     }
 
-    void detachProgramInfos(SkTDArray<const GrProgramInfo*>* dst) {
-        fContext->detachProgramInfos(dst);
+    void detachProgramData(SkTArray<GrRecordingContext::ProgramData>* dst) {
+        fContext->detachProgramData(dst);
     }
 
-    GrStrikeCache* getGrStrikeCache() { return fContext->getGrStrikeCache(); }
     GrTextBlobCache* getTextBlobCache() { return fContext->getTextBlobCache(); }
 
     /**
@@ -71,6 +68,41 @@ public:
     // CONTEXT TODO: remove this backdoor
     // In order to make progress we temporarily need a way to break CL impasses.
     GrContext* backdoor();
+
+#if GR_TEST_UTILS
+    // Used by tests that intentionally exercise codepaths that print warning messages, in order to
+    // not confuse users with output that looks like a testing failure.
+    class AutoSuppressWarningMessages {
+    public:
+        AutoSuppressWarningMessages(GrRecordingContext* context) : fContext(context) {
+            ++fContext->fSuppressWarningMessages;
+        }
+        ~AutoSuppressWarningMessages() {
+            --fContext->fSuppressWarningMessages;
+        }
+    private:
+        GrRecordingContext* fContext;
+    };
+    void incrSuppressWarningMessages() { ++fContext->fSuppressWarningMessages; }
+    void decrSuppressWarningMessages() { --fContext->fSuppressWarningMessages; }
+#endif
+
+    void printWarningMessage(const char* msg) const {
+#if GR_TEST_UTILS
+        if (fContext->fSuppressWarningMessages > 0) {
+            return;
+        }
+#endif
+        SkDebugf(msg);
+    }
+
+    GrRecordingContext::Stats* stats() {
+        return &fContext->fStats;
+    }
+
+    GrSDFTOptions SDFTOptions() const {
+        return {this->options().fMinDistanceFieldFontSize, this->options().fGlyphsAsPathsFontSize};
+    }
 
 private:
     explicit GrRecordingContextPriv(GrRecordingContext* context) : fContext(context) {}

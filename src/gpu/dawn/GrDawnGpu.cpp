@@ -10,9 +10,11 @@
 #include "include/gpu/GrBackendSemaphore.h"
 #include "include/gpu/GrBackendSurface.h"
 #include "include/gpu/GrContextOptions.h"
+#include "include/gpu/GrDirectContext.h"
+#include "src/gpu/GrContextPriv.h"
+#include "src/gpu/GrDataUtils.h"
 #include "src/gpu/GrGeometryProcessor.h"
 #include "src/gpu/GrGpuResourceCacheAccess.h"
-#include "src/gpu/GrMesh.h"
 #include "src/gpu/GrPipeline.h"
 #include "src/gpu/GrRenderTargetPriv.h"
 #include "src/gpu/GrSemaphore.h"
@@ -28,14 +30,43 @@
 #include "src/gpu/dawn/GrDawnUtil.h"
 
 #include "src/core/SkAutoMalloc.h"
-#include "src/core/SkMipMap.h"
+#include "src/core/SkMipmap.h"
 #include "src/sksl/SkSLCompiler.h"
 
 #if !defined(SK_BUILD_FOR_WIN)
 #include <unistd.h>
 #endif // !defined(SK_BUILD_FOR_WIN)
 
-const int kMaxRenderPipelineEntries = 1024;
+static const int kMaxRenderPipelineEntries = 1024;
+
+namespace {
+
+class Fence {
+public:
+    Fence(const wgpu::Device& device, const wgpu::Fence& fence)
+      : fDevice(device), fFence(fence), fCalled(false) {
+        fFence.OnCompletion(0, callback, this);
+    }
+
+    static void callback(WGPUFenceCompletionStatus status, void* userData) {
+        Fence* fence = static_cast<Fence*>(userData);
+        fence->fCalled = true;
+    }
+
+    bool check() {
+        fDevice.Tick();
+        return fCalled;
+    }
+
+    wgpu::Fence fence() { return fFence; }
+
+private:
+    wgpu::Device            fDevice;
+    wgpu::Fence             fFence;
+    bool                    fCalled;
+};
+
+}
 
 static wgpu::FilterMode to_dawn_filter_mode(GrSamplerState::Filter filter) {
     switch (filter) {
@@ -63,44 +94,51 @@ static wgpu::AddressMode to_dawn_address_mode(GrSamplerState::WrapMode wrapMode)
     }
     SkASSERT(!"unsupported address mode");
     return wgpu::AddressMode::ClampToEdge;
-
 }
 
 sk_sp<GrGpu> GrDawnGpu::Make(const wgpu::Device& device,
-                             const GrContextOptions& options, GrContext* context) {
+                             const GrContextOptions& options, GrDirectContext* direct) {
     if (!device) {
         return nullptr;
     }
 
-    return sk_sp<GrGpu>(new GrDawnGpu(context, options, device));
+    return sk_sp<GrGpu>(new GrDawnGpu(direct, options, device));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
-GrDawnGpu::GrDawnGpu(GrContext* context, const GrContextOptions& options,
+GrDawnGpu::GrDawnGpu(GrDirectContext* direct, const GrContextOptions& options,
                      const wgpu::Device& device)
-        : INHERITED(context)
+        : INHERITED(direct)
         , fDevice(device)
-        , fQueue(device.CreateQueue())
+        , fQueue(device.GetDefaultQueue())
         , fCompiler(new SkSL::Compiler())
         , fUniformRingBuffer(this, wgpu::BufferUsage::Uniform)
+        , fStagingBufferManager(this)
         , fRenderPipelineCache(kMaxRenderPipelineEntries)
-        , fStagingManager(fDevice) {
+        , fFinishCallbacks(this) {
     fCaps.reset(new GrDawnCaps(options));
 }
 
 GrDawnGpu::~GrDawnGpu() {
+    this->waitOnAllBusyStagingBuffers();
 }
 
-
 void GrDawnGpu::disconnect(DisconnectType type) {
-    SkASSERT(!"unimplemented");
+    if (DisconnectType::kCleanup == type) {
+        this->waitOnAllBusyStagingBuffers();
+    }
+    fStagingBufferManager.reset();
+    fQueue = nullptr;
+    fDevice = nullptr;
+    INHERITED::disconnect(type);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 
 GrOpsRenderPass* GrDawnGpu::getOpsRenderPass(
-            GrRenderTarget* rt, GrSurfaceOrigin origin, const SkIRect& bounds,
+            GrRenderTarget* rt, GrStencilAttachment*,
+            GrSurfaceOrigin origin, const SkIRect& bounds,
             const GrOpsRenderPass::LoadAndStoreInfo& colorInfo,
             const GrOpsRenderPass::StencilLoadAndStoreInfo& stencilInfo,
             const SkTArray<GrSurfaceProxy*, true>& sampledProxies) {
@@ -127,8 +165,8 @@ bool GrDawnGpu::onWritePixels(GrSurface* surface, int left, int top, int width, 
     if (!texture) {
         return false;
     }
-    texture->upload(texels, mipLevelCount, SkIRect::MakeXYWH(left, top, width, height),
-                    this->getCopyEncoder());
+    texture->upload(srcColorType, texels, mipLevelCount,
+                    SkIRect::MakeXYWH(left, top, width, height), this->getCopyEncoder());
     return true;
 }
 
@@ -148,7 +186,7 @@ bool GrDawnGpu::onTransferPixelsFrom(GrSurface* surface, int left, int top, int 
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-sk_sp<GrTexture> GrDawnGpu::onCreateTexture(const GrSurfaceDesc& desc,
+sk_sp<GrTexture> GrDawnGpu::onCreateTexture(SkISize dimensions,
                                             const GrBackendFormat& backendFormat,
                                             GrRenderable renderable,
                                             int renderTargetSampleCnt,
@@ -156,7 +194,10 @@ sk_sp<GrTexture> GrDawnGpu::onCreateTexture(const GrSurfaceDesc& desc,
                                             GrProtected,
                                             int mipLevelCount,
                                             uint32_t levelClearMask) {
-    SkASSERT(!levelClearMask);
+    if (levelClearMask) {
+        return nullptr;
+    }
+
     wgpu::TextureFormat format;
     if (!backendFormat.asDawnFormat(&format)) {
         return nullptr;
@@ -165,35 +206,30 @@ sk_sp<GrTexture> GrDawnGpu::onCreateTexture(const GrSurfaceDesc& desc,
     GrMipMapsStatus mipMapsStatus =
         mipLevelCount > 1 ? GrMipMapsStatus::kDirty : GrMipMapsStatus::kNotAllocated;
 
-    return GrDawnTexture::Make(this, { desc.fWidth, desc.fHeight },
-                                       desc.fConfig, format, renderable,
-                                       renderTargetSampleCnt, budgeted, mipLevelCount,
-                                       mipMapsStatus);
+    return GrDawnTexture::Make(this, dimensions, format, renderable, renderTargetSampleCnt,
+                               budgeted, mipLevelCount, mipMapsStatus);
 }
 
 sk_sp<GrTexture> GrDawnGpu::onCreateCompressedTexture(SkISize dimensions, const GrBackendFormat&,
-                                                      SkBudgeted, const void* data,
-                                                      size_t dataSize) {
+                                                      SkBudgeted, GrMipMapped, GrProtected,
+                                                      const void* data, size_t dataSize) {
     SkASSERT(!"unimplemented");
     return nullptr;
 }
 
 sk_sp<GrTexture> GrDawnGpu::onWrapBackendTexture(const GrBackendTexture& backendTex,
-                                                 GrColorType colorType,
                                                  GrWrapOwnership ownership,
                                                  GrWrapCacheable cacheable,
-                                                 GrIOType) {
-    GrDawnImageInfo info;
-    if (!backendTex.getDawnImageInfo(&info)) {
+                                                 GrIOType ioType) {
+    GrDawnTextureInfo info;
+    if (!backendTex.getDawnTextureInfo(&info)) {
         return nullptr;
     }
 
     SkISize dimensions = { backendTex.width(), backendTex.height() };
-    GrPixelConfig config = this->caps()->getConfigFromBackendFormat(backendTex.getBackendFormat(),
-                                                                    colorType);
     GrMipMapsStatus status = GrMipMapsStatus::kNotAllocated;
-    return GrDawnTexture::MakeWrapped(this, dimensions, config, GrRenderable::kNo, 1, status,
-                                      cacheable, info);
+    return GrDawnTexture::MakeWrapped(this, dimensions, GrRenderable::kNo, 1, status, cacheable,
+                                      ioType, info);
 }
 
 sk_sp<GrTexture> GrDawnGpu::onWrapCompressedBackendTexture(const GrBackendTexture& backendTex,
@@ -202,60 +238,52 @@ sk_sp<GrTexture> GrDawnGpu::onWrapCompressedBackendTexture(const GrBackendTextur
     return nullptr;
 }
 
-
 sk_sp<GrTexture> GrDawnGpu::onWrapRenderableBackendTexture(const GrBackendTexture& tex,
-                                                           int sampleCnt, GrColorType colorType,
+                                                           int sampleCnt,
                                                            GrWrapOwnership,
                                                            GrWrapCacheable cacheable) {
-    GrDawnImageInfo info;
-    if (!tex.getDawnImageInfo(&info) || !info.fTexture) {
+    GrDawnTextureInfo info;
+    if (!tex.getDawnTextureInfo(&info) || !info.fTexture) {
         return nullptr;
     }
 
     SkISize dimensions = { tex.width(), tex.height() };
-    GrPixelConfig config = this->caps()->getConfigFromBackendFormat(tex.getBackendFormat(),
-                                                                    colorType);
     sampleCnt = this->caps()->getRenderTargetSampleCount(sampleCnt, tex.getBackendFormat());
     if (sampleCnt < 1) {
         return nullptr;
     }
 
     GrMipMapsStatus status = GrMipMapsStatus::kNotAllocated;
-    return GrDawnTexture::MakeWrapped(this, dimensions, config, GrRenderable::kYes, sampleCnt,
-                                      status, cacheable, info);
+    return GrDawnTexture::MakeWrapped(this, dimensions, GrRenderable::kYes, sampleCnt, status,
+                                      cacheable, kRW_GrIOType, info);
 }
 
-sk_sp<GrRenderTarget> GrDawnGpu::onWrapBackendRenderTarget(const GrBackendRenderTarget& rt,
-                                                           GrColorType colorType) {
-    GrDawnImageInfo info;
-    if (!rt.getDawnImageInfo(&info) && !info.fTexture) {
+sk_sp<GrRenderTarget> GrDawnGpu::onWrapBackendRenderTarget(const GrBackendRenderTarget& rt) {
+    GrDawnRenderTargetInfo info;
+    if (!rt.getDawnRenderTargetInfo(&info) || !info.fTextureView) {
         return nullptr;
     }
 
     SkISize dimensions = { rt.width(), rt.height() };
-    GrPixelConfig config = this->caps()->getConfigFromBackendFormat(rt.getBackendFormat(),
-                                                                    colorType);
     int sampleCnt = 1;
-    return GrDawnRenderTarget::MakeWrapped(this, dimensions, config, sampleCnt, info);
+    return GrDawnRenderTarget::MakeWrapped(this, dimensions, sampleCnt, info);
 }
 
 sk_sp<GrRenderTarget> GrDawnGpu::onWrapBackendTextureAsRenderTarget(const GrBackendTexture& tex,
-                                                                    int sampleCnt,
-                                                                    GrColorType colorType) {
-    GrDawnImageInfo info;
-    if (!tex.getDawnImageInfo(&info) || !info.fTexture) {
+                                                                    int sampleCnt) {
+    GrDawnTextureInfo textureInfo;
+    if (!tex.getDawnTextureInfo(&textureInfo) || !textureInfo.fTexture) {
         return nullptr;
     }
 
     SkISize dimensions = { tex.width(), tex.height() };
-    GrPixelConfig config = this->caps()->getConfigFromBackendFormat(tex.getBackendFormat(),
-                                                                    colorType);
     sampleCnt = this->caps()->getRenderTargetSampleCount(sampleCnt, tex.getBackendFormat());
     if (sampleCnt < 1) {
         return nullptr;
     }
 
-    return GrDawnRenderTarget::MakeWrapped(this, dimensions, config, sampleCnt, info);
+    GrDawnRenderTargetInfo info(textureInfo);
+    return GrDawnRenderTarget::MakeWrapped(this, dimensions, sampleCnt, info);
 }
 
 GrStencilAttachment* GrDawnGpu::createStencilAttachmentForRenderTarget(const GrRenderTarget* rt,
@@ -273,7 +301,6 @@ GrStencilAttachment* GrDawnGpu::createStencilAttachmentForRenderTarget(const GrR
 GrBackendTexture GrDawnGpu::onCreateBackendTexture(SkISize dimensions,
                                                    const GrBackendFormat& backendFormat,
                                                    GrRenderable renderable,
-                                                   const BackendTextureData* data,
                                                    GrMipMapped mipMapped,
                                                    GrProtected isProtected) {
     wgpu::TextureFormat format;
@@ -298,7 +325,7 @@ GrBackendTexture GrDawnGpu::onCreateBackendTexture(SkISize dimensions,
 
     int numMipLevels = 1;
     if (mipMapped == GrMipMapped::kYes) {
-        numMipLevels = SkMipMap::ComputeLevelCount(dimensions.width(), dimensions.height()) + 1;
+        numMipLevels = SkMipmap::ComputeLevelCount(dimensions.width(), dimensions.height()) + 1;
     }
 
     desc.size.width = dimensions.width();
@@ -309,80 +336,99 @@ GrBackendTexture GrDawnGpu::onCreateBackendTexture(SkISize dimensions,
 
     wgpu::Texture tex = this->device().CreateTexture(&desc);
 
-    size_t bpp = GrDawnBytesPerPixel(format);
-    size_t baseLayerSize = bpp * dimensions.width() * dimensions.height();
-    const void* pixels;
-    SkAutoMalloc defaultStorage(baseLayerSize);
-    if (data && data->type() == BackendTextureData::Type::kPixmaps) {
-        pixels = data->pixmap(0).addr();
-    } else {
-        pixels = defaultStorage.get();
-        memset(defaultStorage.get(), 0, baseLayerSize);
-    }
-    wgpu::Device device = this->device();
-    wgpu::CommandEncoder copyEncoder = fDevice.CreateCommandEncoder();
-    int w = dimensions.width(), h = dimensions.height();
-    for (uint32_t i = 0; i < desc.mipLevelCount; i++) {
-        size_t origRowBytes = bpp * w;
-        size_t rowBytes = GrDawnRoundRowBytes(origRowBytes);
-        size_t size = rowBytes * h;
-        GrDawnStagingBuffer* stagingBuffer = this->getStagingBuffer(size);
-        if (rowBytes == origRowBytes) {
-            memcpy(stagingBuffer->fData, pixels, size);
-        } else {
-            const char* src = static_cast<const char*>(pixels);
-            char* dst = static_cast<char*>(stagingBuffer->fData);
-            for (int row = 0; row < h; row++) {
-                memcpy(dst, src, origRowBytes);
-                dst += rowBytes;
-                src += origRowBytes;
-            }
-        }
-        wgpu::Buffer buffer = stagingBuffer->fBuffer;
-        buffer.Unmap();
-        stagingBuffer->fData = nullptr;
-        wgpu::BufferCopyView srcBuffer;
-        srcBuffer.buffer = buffer;
-        srcBuffer.offset = 0;
-        srcBuffer.rowPitch = rowBytes;
-        srcBuffer.imageHeight = h;
-        wgpu::TextureCopyView dstTexture;
-        dstTexture.texture = tex;
-        dstTexture.mipLevel = i;
-        dstTexture.origin = {0, 0, 0};
-        wgpu::Extent3D copySize = {(uint32_t) w, (uint32_t) h, 1};
-        copyEncoder.CopyBufferToTexture(&srcBuffer, &dstTexture, &copySize);
-        w = SkTMax(1, w / 2);
-        h = SkTMax(1, h / 2);
-    }
-    wgpu::CommandBuffer cmdBuf = copyEncoder.Finish();
-    fQueue.Submit(1, &cmdBuf);
-    GrDawnImageInfo info;
+    GrDawnTextureInfo info;
     info.fTexture = tex;
     info.fFormat = desc.format;
     info.fLevelCount = desc.mipLevelCount;
     return GrBackendTexture(dimensions.width(), dimensions.height(), info);
 }
 
-GrBackendTexture GrDawnGpu::onCreateCompressedBackendTexture(SkISize dimensions,
-                                                             const GrBackendFormat&,
-                                                             const BackendTextureData*,
-                                                             GrMipMapped,
-                                                             GrProtected) {
+bool GrDawnGpu::onUpdateBackendTexture(const GrBackendTexture& backendTexture,
+                                       sk_sp<GrRefCntedCallback> finishedCallback,
+                                       const BackendTextureData* data) {
+    GrDawnTextureInfo info;
+    SkAssertResult(backendTexture.getDawnTextureInfo(&info));
+
+    size_t bpp = GrDawnBytesPerPixel(info.fFormat);
+    size_t baseLayerSize = bpp * backendTexture.width() * backendTexture.height();
+    const void* pixels;
+    SkAutoMalloc defaultStorage(baseLayerSize);
+    if (data && data->type() == BackendTextureData::Type::kPixmaps) {
+        pixels = data->pixmap(0).addr();
+    } else {
+        pixels = defaultStorage.get();
+        GrColorType colorType;
+        if (!GrDawnFormatToGrColorType(info.fFormat, &colorType)) {
+            return false;
+        }
+        SkISize size{backendTexture.width(), backendTexture.height()};
+        GrImageInfo imageInfo(colorType, kUnpremul_SkAlphaType, nullptr, size);
+        GrClearImage(imageInfo, defaultStorage.get(), bpp * backendTexture.width(), data->color());
+    }
+    wgpu::Device device = this->device();
+    wgpu::CommandEncoder copyEncoder = this->getCopyEncoder();
+    int w = backendTexture.width(), h = backendTexture.height();
+    for (uint32_t i = 0; i < info.fLevelCount; i++) {
+        size_t origRowBytes = bpp * w;
+        size_t rowBytes = GrDawnRoundRowBytes(origRowBytes);
+        size_t size = rowBytes * h;
+        GrStagingBufferManager::Slice stagingBuffer =
+                this->stagingBufferManager()->allocateStagingBufferSlice(size);
+        if (rowBytes == origRowBytes) {
+            memcpy(stagingBuffer.fOffsetMapPtr, pixels, size);
+        } else {
+            const char* src = static_cast<const char*>(pixels);
+            char* dst = static_cast<char*>(stagingBuffer.fOffsetMapPtr);
+            for (int row = 0; row < h; row++) {
+                memcpy(dst, src, origRowBytes);
+                dst += rowBytes;
+                src += origRowBytes;
+            }
+        }
+        wgpu::BufferCopyView srcBuffer;
+        srcBuffer.buffer = static_cast<GrDawnBuffer*>(stagingBuffer.fBuffer)->get();
+        srcBuffer.bytesPerRow = 0; // TODO: remove this once the deprecated fields are gone.
+        srcBuffer.layout.offset = stagingBuffer.fOffset;
+        srcBuffer.layout.bytesPerRow = rowBytes;
+        srcBuffer.layout.rowsPerImage = h;
+        wgpu::TextureCopyView dstTexture;
+        dstTexture.texture = info.fTexture;
+        dstTexture.mipLevel = i;
+        dstTexture.origin = {0, 0, 0};
+        wgpu::Extent3D copySize = {(uint32_t)w, (uint32_t)h, 1};
+        copyEncoder.CopyBufferToTexture(&srcBuffer, &dstTexture, &copySize);
+        w = std::max(1, w / 2);
+        h = std::max(1, h / 2);
+    }
+    return true;
+}
+
+GrBackendTexture GrDawnGpu::onCreateCompressedBackendTexture(
+        SkISize dimensions, const GrBackendFormat&, GrMipMapped, GrProtected) {
     return {};
 }
 
+bool GrDawnGpu::onUpdateCompressedBackendTexture(const GrBackendTexture&,
+                                                 sk_sp<GrRefCntedCallback> finishedCallback,
+                                                 const BackendTextureData*) {
+    return false;
+}
+
 void GrDawnGpu::deleteBackendTexture(const GrBackendTexture& tex) {
-    GrDawnImageInfo info;
-    if (tex.getDawnImageInfo(&info)) {
+    GrDawnTextureInfo info;
+    if (tex.getDawnTextureInfo(&info)) {
         info.fTexture = nullptr;
     }
 }
 
+bool GrDawnGpu::compile(const GrProgramDesc&, const GrProgramInfo&) {
+    return false;
+}
+
 #if GR_TEST_UTILS
 bool GrDawnGpu::isTestingOnlyBackendTexture(const GrBackendTexture& tex) const {
-    GrDawnImageInfo info;
-    if (!tex.getDawnImageInfo(&info)) {
+    GrDawnTextureInfo info;
+    if (!tex.getDawnTextureInfo(&info)) {
         return false;
     }
 
@@ -391,14 +437,12 @@ bool GrDawnGpu::isTestingOnlyBackendTexture(const GrBackendTexture& tex) const {
 
 GrBackendRenderTarget GrDawnGpu::createTestingOnlyBackendRenderTarget(int width, int height,
                                                                       GrColorType colorType) {
-    GrPixelConfig config = GrColorTypeToPixelConfig(colorType);
-
     if (width > this->caps()->maxTextureSize() || height > this->caps()->maxTextureSize()) {
         return GrBackendRenderTarget();
     }
 
     wgpu::TextureFormat format;
-    if (!GrPixelConfigToDawnFormat(config, &format)) {
+    if (!GrColorTypeToDawnFormat(colorType, &format)) {
         return GrBackendRenderTarget();
     }
 
@@ -414,46 +458,81 @@ GrBackendRenderTarget GrDawnGpu::createTestingOnlyBackendRenderTarget(int width,
 
     wgpu::Texture tex = this->device().CreateTexture(&desc);
 
-    GrDawnImageInfo info;
-    info.fTexture = tex;
+    GrDawnRenderTargetInfo info;
+    info.fTextureView = tex.CreateView();
     info.fFormat = desc.format;
     info.fLevelCount = desc.mipLevelCount;
     return GrBackendRenderTarget(width, height, 1, 0, info);
 }
 
 void GrDawnGpu::deleteTestingOnlyBackendRenderTarget(const GrBackendRenderTarget& rt) {
-    GrDawnImageInfo info;
-    if (rt.getDawnImageInfo(&info)) {
-        info.fTexture = nullptr;
+    GrDawnRenderTargetInfo info;
+    if (rt.getDawnRenderTargetInfo(&info)) {
+        info.fTextureView = nullptr;
     }
 }
 
 void GrDawnGpu::testingOnly_flushGpuAndSync() {
-    this->flush();
+    this->submitToGpu(true);
 }
 
 #endif
 
-void GrDawnGpu::flush() {
+void GrDawnGpu::addFinishedProc(GrGpuFinishedProc finishedProc,
+                                GrGpuFinishedContext finishedContext) {
+    fFinishCallbacks.add(finishedProc, finishedContext);
+}
+
+void GrDawnGpu::checkForCompletedStagingBuffers() {
+    // We expect all the buffer maps to trigger in order of submission so we bail after the first
+    // non finished map since we always push new busy buffers to the back of our list.
+    while (!fBusyStagingBuffers.empty() && fBusyStagingBuffers.front()->isMapped()) {
+        fBusyStagingBuffers.pop_front();
+    }
+}
+
+void GrDawnGpu::waitOnAllBusyStagingBuffers() {
+    while (!fBusyStagingBuffers.empty()) {
+        fDevice.Tick();
+        this->checkForCompletedStagingBuffers();
+    }
+}
+
+void GrDawnGpu::takeOwnershipOfStagingBuffer(sk_sp<GrGpuBuffer> buffer) {
+    fSubmittedStagingBuffers.push_back(std::move(buffer));
+}
+
+
+static void callback(WGPUFenceCompletionStatus status, void* userData) {
+    *static_cast<bool*>(userData) = true;
+}
+
+bool GrDawnGpu::onSubmitToGpu(bool syncCpu) {
     this->flushCopyEncoder();
     if (!fCommandBuffers.empty()) {
         fQueue.Submit(fCommandBuffers.size(), &fCommandBuffers.front());
         fCommandBuffers.clear();
     }
-    fStagingManager.mapBusyList();
-    fDevice.Tick();
-}
 
-bool GrDawnGpu::onFinishFlush(GrSurfaceProxy*[], int n, SkSurface::BackendSurfaceAccess access,
-                              const GrFlushInfo& info, const GrPrepareForExternalIORequests&) {
-    this->flush();
+    this->moveStagingBuffersToBusyAndMapAsync();
+    if (syncCpu) {
+        wgpu::FenceDescriptor desc;
+        wgpu::Fence fence = fQueue.CreateFence(&desc);
+        bool called = false;
+        fence.OnCompletion(0, callback, &called);
+        while (!called) {
+            fDevice.Tick();
+        }
+        fFinishCallbacks.callAll(true);
+    }
+
+    this->checkForCompletedStagingBuffers();
+
     return true;
 }
 
 static wgpu::Texture get_dawn_texture_from_surface(GrSurface* src) {
-    if (auto rt = static_cast<GrDawnRenderTarget*>(src->asRenderTarget())) {
-        return rt->texture();
-    } else if (auto t = static_cast<GrDawnTexture*>(src->asTexture())) {
+    if (auto t = static_cast<GrDawnTexture*>(src->asTexture())) {
         return t->texture();
     } else {
         return nullptr;
@@ -493,7 +572,7 @@ bool GrDawnGpu::onReadPixels(GrSurface* surface, int left, int top, int width, i
                              size_t rowBytes) {
     wgpu::Texture tex = get_dawn_texture_from_surface(surface);
 
-    if (0 == rowBytes) {
+    if (!tex || 0 == rowBytes) {
         return false;
     }
     size_t origRowBytes = rowBytes;
@@ -513,13 +592,14 @@ bool GrDawnGpu::onReadPixels(GrSurface* surface, int left, int top, int width, i
 
     wgpu::BufferCopyView dstBuffer;
     dstBuffer.buffer = buf;
-    dstBuffer.offset = 0;
-    dstBuffer.rowPitch = rowBytes;
-    dstBuffer.imageHeight = height;
+    dstBuffer.bytesPerRow = 0; // TODO: remove this once the deprecated fields are gone.
+    dstBuffer.layout.offset = 0;
+    dstBuffer.layout.bytesPerRow = rowBytes;
+    dstBuffer.layout.rowsPerImage = height;
 
     wgpu::Extent3D copySize = {(uint32_t) width, (uint32_t) height, 1};
     this->getCopyEncoder().CopyTextureToBuffer(&srcTexture, &dstBuffer, &copySize);
-    flush();
+    this->submitToGpu(true);
 
     const void *readPixelsPtr = nullptr;
     buf.MapReadAsync(callback, &readPixelsPtr);
@@ -553,17 +633,17 @@ void GrDawnGpu::submit(GrOpsRenderPass* renderPass) {
 }
 
 GrFence SK_WARN_UNUSED_RESULT GrDawnGpu::insertFence() {
-    SkASSERT(!"unimplemented");
-    return GrFence();
+    wgpu::FenceDescriptor desc;
+    wgpu::Fence fence = fQueue.CreateFence(&desc);
+    return reinterpret_cast<GrFence>(new Fence(fDevice, fence));
 }
 
-bool GrDawnGpu::waitFence(GrFence fence, uint64_t timeout) {
-    SkASSERT(!"unimplemented");
-    return false;
+bool GrDawnGpu::waitFence(GrFence fence) {
+    return reinterpret_cast<Fence*>(fence)->check();
 }
 
 void GrDawnGpu::deleteFence(GrFence fence) const {
-    SkASSERT(!"unimplemented");
+    delete reinterpret_cast<Fence*>(fence);
 }
 
 std::unique_ptr<GrSemaphore> SK_WARN_UNUSED_RESULT GrDawnGpu::makeSemaphore(bool isOwned) {
@@ -588,7 +668,7 @@ void GrDawnGpu::waitSemaphore(GrSemaphore* semaphore) {
 }
 
 void GrDawnGpu::checkFinishProcs() {
-    SkASSERT(!"unimplemented");
+    fFinishCallbacks.check();
 }
 
 std::unique_ptr<GrSemaphore> GrDawnGpu::prepareTextureForCrossContextUsage(GrTexture* texture) {
@@ -599,7 +679,6 @@ std::unique_ptr<GrSemaphore> GrDawnGpu::prepareTextureForCrossContextUsage(GrTex
 sk_sp<GrDawnProgram> GrDawnGpu::getOrCreateRenderPipeline(
         GrRenderTarget* rt,
         const GrProgramInfo& programInfo) {
-
     GrProgramDesc desc = this->caps()->makeDesc(rt, programInfo);
     if (!desc.isValid()) {
         return nullptr;
@@ -633,9 +712,6 @@ wgpu::Sampler GrDawnGpu::getOrCreateSampler(GrSamplerState samplerState) {
     desc.addressModeW = wgpu::AddressMode::ClampToEdge;
     desc.magFilter = desc.minFilter = to_dawn_filter_mode(samplerState.filter());
     desc.mipmapFilter = wgpu::FilterMode::Linear;
-    desc.lodMinClamp = 0.0f;
-    desc.lodMaxClamp = 1000.0f;
-    desc.compare = wgpu::CompareFunction::Never;
     wgpu::Sampler sampler = device().CreateSampler(&desc);
     fSamplers.insert(std::pair<GrSamplerState, wgpu::Sampler>(samplerState, sampler));
     return sampler;
@@ -643,10 +719,6 @@ wgpu::Sampler GrDawnGpu::getOrCreateSampler(GrSamplerState samplerState) {
 
 GrDawnRingBuffer::Slice GrDawnGpu::allocateUniformRingBufferSlice(int size) {
     return fUniformRingBuffer.allocate(size);
-}
-
-GrDawnStagingBuffer* GrDawnGpu::getStagingBuffer(size_t size) {
-    return fStagingManager.findOrCreateStagingBuffer(size);
 }
 
 void GrDawnGpu::appendCommandBuffer(wgpu::CommandBuffer commandBuffer) {
@@ -667,4 +739,13 @@ void GrDawnGpu::flushCopyEncoder() {
         fCommandBuffers.push_back(fCopyEncoder.Finish());
         fCopyEncoder = nullptr;
     }
+}
+
+void GrDawnGpu::moveStagingBuffersToBusyAndMapAsync() {
+    for (size_t i = 0; i < fSubmittedStagingBuffers.size(); ++i) {
+        GrDawnBuffer* buffer = static_cast<GrDawnBuffer*>(fSubmittedStagingBuffers[i].get());
+        buffer->mapWriteAsync();
+        fBusyStagingBuffers.push_back(std::move(fSubmittedStagingBuffers[i]));
+    }
+    fSubmittedStagingBuffers.clear();
 }

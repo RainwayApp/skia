@@ -7,7 +7,7 @@
 
 #include "src/gpu/ops/GrStencilPathOp.h"
 
-#include "include/private/GrRecordingContext.h"
+#include "include/gpu/GrRecordingContext.h"
 #include "src/gpu/GrGpu.h"
 #include "src/gpu/GrMemoryPool.h"
 #include "src/gpu/GrOpFlushState.h"
@@ -35,6 +35,7 @@ void GrStencilPathOp::onExecute(GrOpFlushState* state, const SkRect& chainBounds
                               fHasStencilClip, numStencilBits);
 
     GrPathRendering::StencilPathArgs args(fUseHWAA, state->drawOpArgs().proxy(),
+                                          state->drawOpArgs().origin(),
                                           &fViewMatrix, &fScissor, &stencil);
     state->gpu()->pathRendering()->stencilPath(args, fPath.get());
 }

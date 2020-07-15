@@ -8,6 +8,7 @@
 #include "include/core/SkCanvas.h"
 #include "include/core/SkSurface.h"
 #include "include/gpu/GrContext.h"
+#include "include/gpu/GrDirectContext.h"
 #include "src/gpu/GrCaps.h"
 #include "src/gpu/GrContextPriv.h"
 #include "src/gpu/GrImageInfo.h"
@@ -47,8 +48,8 @@ template <float (*CONVERT)(float)> static bool check_conversion(uint32_t input, 
 
     for (int c = 0; c < 3; ++c) {
         uint8_t inputComponent = (uint8_t) ((input & (0xff << (c*8))) >> (c*8));
-        float lower = SkTMax(0.f, (float) inputComponent - error);
-        float upper = SkTMin(255.f, (float) inputComponent + error);
+        float lower = std::max(0.f, (float) inputComponent - error);
+        float upper = std::min(255.f, (float) inputComponent + error);
         lower = CONVERT(lower / 255.f);
         upper = CONVERT(upper / 255.f);
         SkASSERT(lower >= 0.f && lower <= 255.f);
@@ -72,16 +73,16 @@ static bool check_double_conversion(uint32_t input, uint32_t output, float error
 
     for (int c = 0; c < 3; ++c) {
         uint8_t inputComponent = (uint8_t) ((input & (0xff << (c*8))) >> (c*8));
-        float lower = SkTMax(0.f, (float) inputComponent - error);
-        float upper = SkTMin(255.f, (float) inputComponent + error);
+        float lower = std::max(0.f, (float) inputComponent - error);
+        float upper = std::min(255.f, (float) inputComponent + error);
         lower = FORWARD(lower / 255.f);
         upper = FORWARD(upper / 255.f);
         SkASSERT(lower >= 0.f && lower <= 255.f);
         SkASSERT(upper >= 0.f && upper <= 255.f);
         uint8_t upperComponent = SkScalarCeilToInt(upper * 255.f);
         uint8_t lowerComponent = SkScalarFloorToInt(lower * 255.f);
-        lower = SkTMax(0.f, (float) lowerComponent - error);
-        upper = SkTMin(255.f, (float) upperComponent + error);
+        lower = std::max(0.f, (float) lowerComponent - error);
+        upper = std::min(255.f, (float) upperComponent + error);
         lower = BACKWARD(lowerComponent / 255.f);
         upper = BACKWARD(upperComponent / 255.f);
         SkASSERT(lower >= 0.f && lower <= 255.f);
@@ -197,7 +198,7 @@ static std::unique_ptr<GrSurfaceContext> make_surface_context(Encoding contextEn
     if (!surfaceContext) {
         ERRORF(reporter, "Could not create %s surface context.", encoding_as_str(contextEncoding));
     }
-    return surfaceContext;
+    return std::move(surfaceContext);
 }
 
 static void test_write_read(Encoding contextEncoding, Encoding writeEncoding, Encoding readEncoding,
@@ -228,7 +229,7 @@ static void test_write_read(Encoding contextEncoding, Encoding writeEncoding, En
 // Test all combinations of writePixels/readPixels where the surface context/write source/read dst
 // are sRGB, linear, or untagged RGBA_8888.
 DEF_GPUTEST_FOR_RENDERING_CONTEXTS(SRGBReadWritePixels, reporter, ctxInfo) {
-    GrContext* context = ctxInfo.grContext();
+    auto context = ctxInfo.directContext();
     if (!context->priv().caps()->getDefaultBackendFormat(GrColorType::kRGBA_8888_SRGB,
                                                          GrRenderable::kNo).isValid()) {
         return;

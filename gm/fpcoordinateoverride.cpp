@@ -18,9 +18,9 @@
 #include "include/core/SkTileMode.h"
 #include "include/core/SkTypes.h"
 #include "include/gpu/GrContext.h"
+#include "src/gpu/GrBitmapTextureMaker.h"
 #include "src/gpu/GrCaps.h"
 #include "src/gpu/GrContextPriv.h"
-#include "src/gpu/GrCoordTransform.h"
 #include "src/gpu/GrFragmentProcessor.h"
 #include "src/gpu/GrRenderTargetContext.h"
 #include "src/gpu/GrRenderTargetContextPriv.h"
@@ -37,8 +37,7 @@ public:
 
     SampleCoordEffect(std::unique_ptr<GrFragmentProcessor> child)
         : INHERITED(CLASS_ID, kNone_OptimizationFlags) {
-        child->setSampledWithExplicitCoords(true);
-        this->registerChildProcessor(std::move(child));
+        this->registerChild(std::move(child), SkSL::SampleUsage::Explicit());
     }
 
     const char* name() const override { return "SampleCoordEffect"; }
@@ -64,10 +63,8 @@ private:
 class GLSLSampleCoordEffect : public GrGLSLFragmentProcessor {
     void emitCode(EmitArgs& args) override {
         GrGLSLFPFragmentBuilder* fragBuilder = args.fFragBuilder;
-        SkString sample1("sample1");
-        SkString sample2("sample2");
-        this->invokeChild(0, &sample1, args, "float2(sk_FragCoord.x, sk_FragCoord.y)");
-        this->invokeChild(0, &sample2, args, "float2(sk_FragCoord.x, 512 - sk_FragCoord.y)");
+        SkString sample1 = this->invokeChild(0, args, "float2(sk_FragCoord.x, sk_FragCoord.y)");
+        SkString sample2 = this->invokeChild(0, args, "float2(sk_FragCoord.x, 512-sk_FragCoord.y)");
         fragBuilder->codeAppendf("%s = (%s + %s) / 2;\n", args.fOutputColor, sample1.c_str(),
                                  sample2.c_str());
     }
@@ -83,10 +80,13 @@ DEF_SIMPLE_GPU_GM_BG(fpcoordinateoverride, ctx, rtCtx, canvas, 512, 512,
 
     SkBitmap bmp;
     GetResourceAsBitmap("images/mandrill_512_q075.jpg", &bmp);
-    GrProxyProvider* proxyProvider = ctx->priv().proxyProvider();
-    sk_sp<GrTextureProxy> texture = proxyProvider->createProxyFromBitmap(bmp, GrMipMapped::kNo);
+    GrBitmapTextureMaker maker(ctx, bmp, GrImageTexGenPolicy::kDraw);
+    auto view = maker.view(GrMipMapped::kNo);
+    if (!view) {
+        return;
+    }
     std::unique_ptr<GrFragmentProcessor> imgFP =
-            GrTextureEffect::Make(texture, bmp.alphaType(), SkMatrix());
+            GrTextureEffect::Make(std::move(view), bmp.alphaType(), SkMatrix());
     auto fp = std::unique_ptr<GrFragmentProcessor>(new SampleCoordEffect(std::move(imgFP)));
 
     GrPaint grPaint;

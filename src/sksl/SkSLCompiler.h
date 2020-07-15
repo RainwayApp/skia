@@ -28,12 +28,10 @@
 #define SK_IN_BUILTIN                  10002
 #define SK_INCOLOR_BUILTIN             10003
 #define SK_OUTCOLOR_BUILTIN            10004
-#define SK_TRANSFORMEDCOORDS2D_BUILTIN 10005
 #define SK_TEXTURESAMPLERS_BUILTIN     10006
 #define SK_OUT_BUILTIN                 10007
 #define SK_LASTFRAGCOLOR_BUILTIN       10008
-#define SK_MAIN_X_BUILTIN              10009
-#define SK_MAIN_Y_BUILTIN              10010
+#define SK_MAIN_COORDS_BUILTIN         10009
 #define SK_WIDTH_BUILTIN               10011
 #define SK_HEIGHT_BUILTIN              10012
 #define SK_FRAGCOORD_BUILTIN              15
@@ -73,14 +71,18 @@ public:
         kPermitInvalidStaticTests_Flag = 1,
     };
 
+    // An invalid (otherwise unused) character to mark where FormatArgs are inserted
+    static constexpr       char  kFormatArgPlaceholder    = '\001';
+    static constexpr const char* kFormatArgPlaceholderStr = "\001";
+
     struct FormatArg {
         enum class Kind {
             kInput,
             kOutput,
-            kCoordX,
-            kCoordY,
+            kCoords,
             kUniform,
             kChildProcessor,
+            kChildProcessorWithMatrix,
             kFunctionName
         };
 
@@ -92,8 +94,8 @@ public:
                 , fIndex(index) {}
 
         Kind fKind;
-
         int fIndex;
+        String fCoords;
     };
 
 #if !defined(SKSL_STANDALONE) && SK_SUPPORT_GPU
@@ -104,7 +106,7 @@ public:
         GrSLType fReturnType;
         SkString fName;
         std::vector<GrShaderVar> fParameters;
-        SkString fBody;
+        String fBody;
         std::vector<Compiler::FormatArg> fFormatArgs;
     };
 #endif
@@ -136,6 +138,8 @@ public:
     bool toGLSL(Program& program, OutputStream& out);
 
     bool toGLSL(Program& program, String* out);
+
+    bool toHLSL(Program& program, String* out);
 
     bool toMetal(Program& program, OutputStream& out);
 
@@ -215,8 +219,8 @@ private:
 
     Position position(int offset);
 
-    std::map<StringFragment, std::pair<std::unique_ptr<ProgramElement>, bool>> fGPUIntrinsics;
-    std::map<StringFragment, std::pair<std::unique_ptr<ProgramElement>, bool>> fInterpreterIntrinsics;
+    std::map<String, std::pair<std::unique_ptr<ProgramElement>, bool>> fGPUIntrinsics;
+    std::map<String, std::pair<std::unique_ptr<ProgramElement>, bool>> fInterpreterIntrinsics;
     std::unique_ptr<ASTFile> fGpuIncludeSource;
     std::shared_ptr<SymbolTable> fGpuSymbolTable;
     std::vector<std::unique_ptr<ProgramElement>> fVertexInclude;

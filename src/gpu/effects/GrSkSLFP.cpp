@@ -8,9 +8,9 @@
 #include "src/gpu/effects/GrSkSLFP.h"
 
 #include "include/effects/SkRuntimeEffect.h"
-#include "include/gpu/GrTexture.h"
 #include "include/private/GrContext_Base.h"
 #include "src/gpu/GrBaseContextPriv.h"
+#include "src/gpu/GrTexture.h"
 #include "src/sksl/SkSLUtil.h"
 
 #include "src/gpu/glsl/GrGLSLFragmentProcessor.h"
@@ -19,61 +19,56 @@
 
 class GrGLSLSkSLFP : public GrGLSLFragmentProcessor {
 public:
-    GrGLSLSkSLFP(SkSL::String glsl, std::vector<SkSL::Compiler::FormatArg> formatArgs,
-                 std::vector<SkSL::Compiler::GLSLFunction> functions)
-            : fGLSL(glsl)
-            , fFormatArgs(std::move(formatArgs))
-            , fFunctions(std::move(functions)) {}
+    GrGLSLSkSLFP(SkSL::PipelineStageArgs&& args) : fArgs(std::move(args)) {}
 
     SkSL::String expandFormatArgs(const SkSL::String& raw,
-                                  const EmitArgs& args,
-                                  const std::vector<SkSL::Compiler::FormatArg> formatArgs,
-                                  const char* coordsName,
-                                  const std::vector<SkString>& childNames) {
+                                  EmitArgs& args,
+                                  std::vector<SkSL::Compiler::FormatArg>::const_iterator& fmtArg) {
         SkSL::String result;
         int substringStartIndex = 0;
-        int formatArgIndex = 0;
         for (size_t i = 0; i < raw.length(); ++i) {
             char c = raw[i];
-            if (c == '%') {
+            if (c == SkSL::Compiler::kFormatArgPlaceholder) {
                 result += SkSL::StringFragment(raw.c_str() + substringStartIndex,
                                                i - substringStartIndex);
-                ++i;
-                c = raw[i];
-                switch (c) {
-                    case 's': {
-                        const SkSL::Compiler::FormatArg& arg = formatArgs[formatArgIndex++];
-                        switch (arg.fKind) {
-                            case SkSL::Compiler::FormatArg::Kind::kInput:
-                                result += args.fInputColor;
-                                break;
-                            case SkSL::Compiler::FormatArg::Kind::kOutput:
-                                result += args.fOutputColor;
-                                break;
-                            case SkSL::Compiler::FormatArg::Kind::kCoordX:
-                                result += coordsName;
-                                result += ".x";
-                                break;
-                            case SkSL::Compiler::FormatArg::Kind::kCoordY:
-                                result += coordsName;
-                                result += ".y";
-                                break;
-                            case SkSL::Compiler::FormatArg::Kind::kUniform:
-                                result += args.fUniformHandler->getUniformCStr(
-                                                                       fUniformHandles[arg.fIndex]);
-                                break;
-                            case SkSL::Compiler::FormatArg::Kind::kChildProcessor:
-                                result += childNames[arg.fIndex].c_str();
-                                break;
-                            case SkSL::Compiler::FormatArg::Kind::kFunctionName:
-                                SkASSERT((int) fFunctionNames.size() > arg.fIndex);
-                                result += fFunctionNames[arg.fIndex].c_str();
-                                break;
-                        }
+                const SkSL::Compiler::FormatArg& arg = *fmtArg++;
+                switch (arg.fKind) {
+                    case SkSL::Compiler::FormatArg::Kind::kInput:
+                        result += args.fInputColor;
+                        break;
+                    case SkSL::Compiler::FormatArg::Kind::kOutput:
+                        result += args.fOutputColor;
+                        break;
+                    case SkSL::Compiler::FormatArg::Kind::kCoords:
+                        result += args.fSampleCoord;
+                        break;
+                    case SkSL::Compiler::FormatArg::Kind::kUniform:
+                        result += args.fUniformHandler->getUniformCStr(fUniformHandles[arg.fIndex]);
+                        break;
+                    case SkSL::Compiler::FormatArg::Kind::kChildProcessor: {
+                        SkSL::String coords = this->expandFormatArgs(arg.fCoords, args, fmtArg);
+                        result += this->invokeChild(arg.fIndex, args.fInputColor, args, coords)
+                                          .c_str();
                         break;
                     }
-                    default:
-                        result += c;
+                    case SkSL::Compiler::FormatArg::Kind::kChildProcessorWithMatrix: {
+                        const auto& fp(args.fFp.cast<GrSkSLFP>());
+                        const auto& sampleUsages(fp.fEffect->fSampleUsages);
+
+                        SkASSERT((size_t)arg.fIndex < sampleUsages.size());
+                        const SkSL::SampleUsage& sampleUsage(sampleUsages[arg.fIndex]);
+
+                        SkSL::String coords = this->expandFormatArgs(arg.fCoords, args, fmtArg);
+                        result += this->invokeChildWithMatrix(
+                                              arg.fIndex, args.fInputColor, args,
+                                              sampleUsage.hasUniformMatrix() ? "" : coords)
+                                          .c_str();
+                        break;
+                    }
+                    case SkSL::Compiler::FormatArg::Kind::kFunctionName:
+                        SkASSERT((int) fFunctionNames.size() > arg.fIndex);
+                        result += fFunctionNames[arg.fIndex].c_str();
+                        break;
                 }
                 substringStartIndex = i + 1;
             }
@@ -87,7 +82,8 @@ public:
         const GrSkSLFP& fp = args.fFp.cast<GrSkSLFP>();
         for (const auto& v : fp.fEffect->inputs()) {
             if (v.fQualifier == SkRuntimeEffect::Variable::Qualifier::kUniform) {
-                auto handle = args.fUniformHandler->addUniformArray(kFragment_GrShaderFlag,
+                auto handle = args.fUniformHandler->addUniformArray(&fp,
+                                                                    kFragment_GrShaderFlag,
                                                                     v.fGPUType,
                                                                     v.fName.c_str(),
                                                                     v.isArray() ? v.fCount : 0);
@@ -95,18 +91,19 @@ public:
             }
         }
         GrGLSLFPFragmentBuilder* fragBuilder = args.fFragBuilder;
-        SkString coords = args.fTransformedCoords.count()
-            ? fragBuilder->ensureCoords2D(args.fTransformedCoords[0].fVaryingPoint)
-            : SkString("sk_FragCoord");
         std::vector<SkString> childNames;
+        // We need to ensure that we emit each child's helper function at least once.
+        // Any child FP that isn't sampled won't trigger a call otherwise, leading to asserts later.
         for (int i = 0; i < this->numChildProcessors(); ++i) {
-            childNames.push_back(SkStringPrintf("_child%d", i));
-            this->invokeChild(i, &childNames[i], args);
+            if (this->childProcessor(i)) {
+                this->emitChildFunction(i, args);
+            }
         }
-        for (const auto& f : fFunctions) {
+        for (const auto& f : fArgs.fFunctions) {
             fFunctionNames.emplace_back();
-            SkSL::String body = this->expandFormatArgs(f.fBody.c_str(), args, f.fFormatArgs,
-                                                       coords.c_str(), childNames);
+            auto fmtArgIter = f.fFormatArgs.cbegin();
+            SkSL::String body = this->expandFormatArgs(f.fBody, args, fmtArgIter);
+            SkASSERT(fmtArgIter == f.fFormatArgs.cend());
             fragBuilder->emitFunction(f.fReturnType,
                                       f.fName.c_str(),
                                       f.fParameters.size(),
@@ -114,15 +111,16 @@ public:
                                       body.c_str(),
                                       &fFunctionNames.back());
         }
-        fragBuilder->codeAppend(this->expandFormatArgs(fGLSL.c_str(), args, fFormatArgs,
-                                                       coords.c_str(), childNames).c_str());
+        auto fmtArgIter = fArgs.fFormatArgs.cbegin();
+        fragBuilder->codeAppend(this->expandFormatArgs(fArgs.fCode, args, fmtArgIter).c_str());
+        SkASSERT(fmtArgIter == fArgs.fFormatArgs.cend());
     }
 
     void onSetData(const GrGLSLProgramDataManager& pdman,
                    const GrFragmentProcessor& _proc) override {
         size_t uniIndex = 0;
         const GrSkSLFP& outer = _proc.cast<GrSkSLFP>();
-        char* inputs = (char*) outer.fInputs.get();
+        const uint8_t* inputs = outer.fInputs->bytes();
         for (const auto& v : outer.fEffect->inputs()) {
             if (v.fQualifier != SkRuntimeEffect::Variable::Qualifier::kUniform) {
                 continue;
@@ -159,52 +157,46 @@ public:
     }
 
     // nearly-finished GLSL; still contains printf-style "%s" format tokens
-    const SkSL::String fGLSL;
-    std::vector<SkSL::Compiler::FormatArg> fFormatArgs;
-    std::vector<SkSL::Compiler::GLSLFunction> fFunctions;
+    SkSL::PipelineStageArgs fArgs;
     std::vector<UniformHandle> fUniformHandles;
     std::vector<SkString> fFunctionNames;
 };
 
 std::unique_ptr<GrSkSLFP> GrSkSLFP::Make(GrContext_Base* context, sk_sp<SkRuntimeEffect> effect,
-                                         const char* name, const void* inputs, size_t inputSize,
-                                         const SkMatrix* matrix) {
-    return std::unique_ptr<GrSkSLFP>(new GrSkSLFP(context->priv().caps()->refShaderCaps(),
-                                                  std::move(effect), name, inputs, inputSize,
-                                                  matrix));
+                                         const char* name, sk_sp<SkData> inputs) {
+    if (inputs->size() != effect->inputSize()) {
+        return nullptr;
+    }
+    return std::unique_ptr<GrSkSLFP>(new GrSkSLFP(
+            context->priv().caps()->refShaderCaps(), context->priv().getShaderErrorHandler(),
+            std::move(effect), name, std::move(inputs)));
 }
 
-GrSkSLFP::GrSkSLFP(sk_sp<const GrShaderCaps> shaderCaps, sk_sp<SkRuntimeEffect> effect,
-                   const char* name, const void* inputs, size_t inputSize, const SkMatrix* matrix)
+GrSkSLFP::GrSkSLFP(sk_sp<const GrShaderCaps> shaderCaps, ShaderErrorHandler* shaderErrorHandler,
+                   sk_sp<SkRuntimeEffect> effect, const char* name, sk_sp<SkData> inputs)
         : INHERITED(kGrSkSLFP_ClassID, kNone_OptimizationFlags)
         , fShaderCaps(std::move(shaderCaps))
+        , fShaderErrorHandler(shaderErrorHandler)
         , fEffect(std::move(effect))
         , fName(name)
-        , fInputs(new int8_t[inputSize])
-        , fInputSize(inputSize) {
-    if (fInputSize) {
-        memcpy(fInputs.get(), inputs, inputSize);
-    }
-    if (matrix) {
-        fCoordTransform = GrCoordTransform(*matrix);
-        this->addCoordTransform(&fCoordTransform);
+        , fInputs(std::move(inputs)) {
+    if (fEffect->usesSampleCoords()) {
+        this->setUsesSampleCoordsDirectly();
     }
 }
 
 GrSkSLFP::GrSkSLFP(const GrSkSLFP& other)
         : INHERITED(kGrSkSLFP_ClassID, kNone_OptimizationFlags)
         , fShaderCaps(other.fShaderCaps)
+        , fShaderErrorHandler(other.fShaderErrorHandler)
         , fEffect(other.fEffect)
         , fName(other.fName)
-        , fInputs(new int8_t[other.fInputSize])
-        , fInputSize(other.fInputSize) {
-    if (fInputSize) {
-        memcpy(fInputs.get(), other.fInputs.get(), fInputSize);
+        , fInputs(other.fInputs) {
+    if (fEffect->usesSampleCoords()) {
+        this->setUsesSampleCoordsDirectly();
     }
-    if (other.numCoordTransforms()) {
-        fCoordTransform = other.fCoordTransform;
-        this->addCoordTransform(&fCoordTransform);
-    }
+
+    this->cloneAndRegisterAllChildProcessors(other);
 }
 
 const char* GrSkSLFP::name() const {
@@ -212,20 +204,25 @@ const char* GrSkSLFP::name() const {
 }
 
 void GrSkSLFP::addChild(std::unique_ptr<GrFragmentProcessor> child) {
-    this->registerChildProcessor(std::move(child));
+    int childIndex = this->numChildProcessors();
+    SkASSERT((size_t)childIndex < fEffect->fSampleUsages.size());
+    this->registerChild(std::move(child), fEffect->fSampleUsages[childIndex]);
 }
 
 GrGLSLFragmentProcessor* GrSkSLFP::onCreateGLSLInstance() const {
     // Note: This is actually SkSL (again) but with inline format specifiers.
     SkSL::PipelineStageArgs args;
-    SkAssertResult(fEffect->toPipelineStage(fInputs.get(), fShaderCaps.get(), &args));
-    return new GrGLSLSkSLFP(std::move(args.fCode), std::move(args.fFormatArgs),
-                            std::move(args.fFunctions));
+    fEffect->toPipelineStage(fInputs->data(), fShaderCaps.get(), fShaderErrorHandler, &args);
+    return new GrGLSLSkSLFP(std::move(args));
 }
 
 void GrSkSLFP::onGetGLSLProcessorKey(const GrShaderCaps& caps, GrProcessorKeyBuilder* b) const {
-    b->add32(fEffect->index());
-    char* inputs = (char*) fInputs.get();
+    // In the unlikely event of a hash collision, we also include the input size in the key.
+    // That ensures that we will (at worst) use the wrong program, but one that expects the same
+    // amount of input data.
+    b->add32(fEffect->hash());
+    b->add32(SkToU32(fInputs->size()));
+    const uint8_t* inputs = fInputs->bytes();
     for (const auto& v : fEffect->inputs()) {
         if (v.fQualifier != SkRuntimeEffect::Variable::Qualifier::kIn) {
             continue;
@@ -249,17 +246,11 @@ void GrSkSLFP::onGetGLSLProcessorKey(const GrShaderCaps& caps, GrProcessorKeyBui
 
 bool GrSkSLFP::onIsEqual(const GrFragmentProcessor& other) const {
     const GrSkSLFP& sk = other.cast<GrSkSLFP>();
-    SkASSERT(fEffect->index() != sk.fEffect->index() || fInputSize == sk.fInputSize);
-    return fEffect->index() == sk.fEffect->index() &&
-            !memcmp(fInputs.get(), sk.fInputs.get(), fInputSize);
+    return fEffect->hash() == sk.fEffect->hash() && fInputs->equals(sk.fInputs.get());
 }
 
 std::unique_ptr<GrFragmentProcessor> GrSkSLFP::clone() const {
-    std::unique_ptr<GrSkSLFP> result(new GrSkSLFP(*this));
-    for (int i = 0; i < this->numChildProcessors(); ++i) {
-        result->registerChildProcessor(this->childProcessor(i).clone());
-    }
-    return std::unique_ptr<GrFragmentProcessor>(result.release());
+    return std::unique_ptr<GrFragmentProcessor>(new GrSkSLFP(*this));
 }
 
 /**************************************************************************************************/
@@ -269,52 +260,25 @@ GR_DEFINE_FRAGMENT_PROCESSOR_TEST(GrSkSLFP);
 #if GR_TEST_UTILS
 
 #include "include/effects/SkArithmeticImageFilter.h"
+#include "include/effects/SkOverdrawColorFilter.h"
 #include "include/gpu/GrContext.h"
+#include "src/core/SkColorFilterBase.h"
 #include "src/gpu/effects/generated/GrConstColorProcessor.h"
 
-extern const char* SKSL_ARITHMETIC_SRC;
-extern const char* SKSL_DITHER_SRC;
 extern const char* SKSL_OVERDRAW_SRC;
 
 using Value = SkSL::Program::Settings::Value;
 
 std::unique_ptr<GrFragmentProcessor> GrSkSLFP::TestCreate(GrProcessorTestData* d) {
-    int type = d->fRandom->nextULessThan(3);
-    switch (type) {
-        case 0: {
-            static auto effect = std::get<0>(SkRuntimeEffect::Make(SkString(SKSL_DITHER_SRC)));
-            int rangeType = d->fRandom->nextULessThan(3);
-            auto result = GrSkSLFP::Make(d->context(), effect, "Dither",
-                                         &rangeType, sizeof(rangeType));
-            return std::unique_ptr<GrFragmentProcessor>(result.release());
-        }
-        case 1: {
-            static auto effect = std::get<0>(SkRuntimeEffect::Make(SkString(SKSL_ARITHMETIC_SRC)));
-            ArithmeticFPInputs inputs;
-            inputs.k[0] = d->fRandom->nextF();
-            inputs.k[1] = d->fRandom->nextF();
-            inputs.k[2] = d->fRandom->nextF();
-            inputs.k[3] = d->fRandom->nextF();
-            inputs.enforcePMColor = d->fRandom->nextBool();
-            auto result = GrSkSLFP::Make(d->context(), effect, "Arithmetic",
-                                         &inputs, sizeof(inputs));
-            result->addChild(GrConstColorProcessor::Make(
-                                                        SK_PMColor4fWHITE,
-                                                        GrConstColorProcessor::InputMode::kIgnore));
-            return std::unique_ptr<GrFragmentProcessor>(result.release());
-        }
-        case 2: {
-            static auto effect = std::get<0>(SkRuntimeEffect::Make(SkString(SKSL_OVERDRAW_SRC)));
-            SkColor4f inputs[6];
-            for (int i = 0; i < 6; ++i) {
-                inputs[i] = SkColor4f::FromBytes_RGBA(d->fRandom->nextU());
-            }
-            auto result = GrSkSLFP::Make(d->context(), effect, "Overdraw",
-                                         &inputs, sizeof(inputs));
-            return std::unique_ptr<GrFragmentProcessor>(result.release());
-        }
+    SkColor colors[SkOverdrawColorFilter::kNumColors];
+    for (SkColor& c : colors) {
+        c = d->fRandom->nextU();
     }
-    SK_ABORT("unreachable");
+    auto filter = SkOverdrawColorFilter::MakeWithSkColors(colors);
+    auto [success, fp] = as_CFB(filter)->asFragmentProcessor(/*inputFP=*/nullptr, d->context(),
+                                                             GrColorInfo{});
+    SkASSERT(success);
+    return std::move(fp);
 }
 
 #endif

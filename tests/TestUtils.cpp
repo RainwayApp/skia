@@ -77,14 +77,16 @@ void TestWritePixels(skiatest::Reporter* reporter,
 void TestCopyFromSurface(skiatest::Reporter* reporter,
                          GrContext* context,
                          GrSurfaceProxy* proxy,
+                         GrSurfaceOrigin origin,
                          GrColorType colorType,
                          uint32_t expectedPixelValues[],
                          const char* testName) {
-    sk_sp<GrTextureProxy> dstProxy = GrSurfaceProxy::Copy(context, proxy, GrMipMapped::kNo,
-                                                          SkBackingFit::kExact, SkBudgeted::kYes);
-    SkASSERT(dstProxy);
-
-    auto dstContext = GrSurfaceContext::Make(context, std::move(dstProxy), colorType,
+    auto copy = GrSurfaceProxy::Copy(context, proxy, origin, GrMipMapped::kNo, SkBackingFit::kExact,
+                                     SkBudgeted::kYes);
+    SkASSERT(copy && copy->asTextureProxy());
+    auto swizzle = context->priv().caps()->getReadSwizzle(copy->backendFormat(), colorType);
+    GrSurfaceProxyView view(std::move(copy), origin, swizzle);
+    auto dstContext = GrSurfaceContext::Make(context, std::move(view), colorType,
                                              kPremul_SkAlphaType, nullptr);
     SkASSERT(dstContext);
 
@@ -104,19 +106,44 @@ void FillPixelData(int width, int height, GrColor* data) {
 
 bool CreateBackendTexture(GrContext* context,
                           GrBackendTexture* backendTex,
+                          int width, int height,
+                          SkColorType colorType,
+                          const SkColor4f& color,
+                          GrMipMapped mipMapped,
+                          GrRenderable renderable,
+                          GrProtected isProtected) {
+    SkImageInfo info = SkImageInfo::Make(width, height, colorType, kPremul_SkAlphaType);
+    return CreateBackendTexture(context, backendTex, info, color, mipMapped, renderable,
+                                isProtected);
+}
+
+bool CreateBackendTexture(GrContext* context,
+                          GrBackendTexture* backendTex,
                           const SkImageInfo& ii,
                           const SkColor4f& color,
                           GrMipMapped mipMapped,
-                          GrRenderable renderable) {
+                          GrRenderable renderable,
+                          GrProtected isProtected) {
+    bool finishedBECreate = false;
+    auto markFinished = [](void* context) {
+        *(bool*)context = true;
+    };
+
     *backendTex = context->createBackendTexture(ii.width(), ii.height(), ii.colorType(),
-                                                color, mipMapped, renderable);
+                                                color, mipMapped, renderable, isProtected,
+                                                markFinished, &finishedBECreate);
+    if (backendTex->isValid()) {
+        context->submit();
+        while (!finishedBECreate) {
+            context->checkAsyncWorkCompletion();
+        }
+    }
     return backendTex->isValid();
 }
 
 void DeleteBackendTexture(GrContext* context, const GrBackendTexture& backendTex) {
-    GrFlushInfo flushInfo;
-    flushInfo.fFlags = kSyncCpu_GrFlushFlag;
-    context->flush(flushInfo);
+    context->flush();
+    context->submit(true);
     context->deleteBackendTexture(backendTex);
 }
 
@@ -292,7 +319,7 @@ bool CheckSolidPixels(const SkColor4f& col, const SkPixmap& pixmap,
 }
 
 void CheckSingleThreadedProxyRefs(skiatest::Reporter* reporter,
-                                  GrTextureProxy* proxy,
+                                  GrSurfaceProxy* proxy,
                                   int32_t expectedProxyRefs,
                                   int32_t expectedBackingRefs) {
     int32_t actualBackingRefs = proxy->testingOnly_getBackingRefCnt();

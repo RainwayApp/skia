@@ -7,26 +7,29 @@
 
 #include "include/core/SkCanvas.h"
 #include "include/core/SkSurface.h"
-#include "include/gpu/GrContext.h"
+#include "include/gpu/GrDirectContext.h"
 #include "src/gpu/GrContextPriv.h"
 #include "src/gpu/GrTexturePriv.h"
 #include "src/image/SkImage_Base.h"
+#include "src/image/SkImage_GpuBase.h"
 #include "tests/Test.h"
 
 // Tests that MIP maps are created and invalidated as expected when drawing to and from GrTextures.
 DEF_GPUTEST_FOR_RENDERING_CONTEXTS(GrTextureMipMapInvalidationTest, reporter, ctxInfo) {
-    GrContext* context = ctxInfo.grContext();
+    auto context = ctxInfo.directContext();
     if (!context->priv().caps()->mipMapSupport()) {
         return;
     }
 
     auto isMipped = [] (SkSurface* surf) {
-        const GrTexture* texture = surf->makeImageSnapshot()->getTexture();
+        SkImage_GpuBase* image = static_cast<SkImage_GpuBase*>(as_IB(surf->makeImageSnapshot()));
+        const GrTexture* texture = image->getTexture();
         return GrMipMapped::kYes == texture->texturePriv().mipMapped();
     };
 
     auto mipsAreDirty = [] (SkSurface* surf) {
-        return surf->makeImageSnapshot()->getTexture()->texturePriv().mipMapsAreDirty();
+        SkImage_GpuBase* image = static_cast<SkImage_GpuBase*>(as_IB(surf->makeImageSnapshot()));
+        return image->getTexture()->texturePriv().mipMapsAreDirty();
     };
 
     auto info = SkImageInfo::MakeN32Premul(256, 256);
@@ -37,7 +40,7 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(GrTextureMipMapInvalidationTest, reporter, ct
         auto surf2 = SkSurface::MakeRenderTarget(context, SkBudgeted::kYes, info);
         // Draw something just in case we ever had a solid color optimization
         surf1->getCanvas()->drawCircle(128, 128, 50, SkPaint());
-        surf1->flush();
+        surf1->flushAndSubmit();
 
         // No mipmaps initially
         REPORTER_ASSERT(reporter, isMipped(surf1.get()) == allocateMips);
@@ -49,20 +52,20 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(GrTextureMipMapInvalidationTest, reporter, ct
         paint.setFilterQuality(kMedium_SkFilterQuality);
         surf2->getCanvas()->scale(0.2f, 0.2f);
         surf2->getCanvas()->drawImage(surf1->makeImageSnapshot(), 0, 0, &paint);
-        context->flush();
+        context->flushAndSubmit();
         REPORTER_ASSERT(reporter, isMipped(surf1.get()) == allocateMips);
         REPORTER_ASSERT(reporter, !allocateMips || !mipsAreDirty(surf1.get()));
 
         // Changing the contents of the surface should invalidate the mipmap, but not de-allocate
         surf1->getCanvas()->drawCircle(128, 128, 100, SkPaint());
-        context->flush();
+        context->flushAndSubmit();
         REPORTER_ASSERT(reporter, isMipped(surf1.get()) == allocateMips);
         REPORTER_ASSERT(reporter, mipsAreDirty(surf1.get()));
     }
 }
 
 DEF_GPUTEST_FOR_RENDERING_CONTEXTS(ReimportImageTextureWithMipLevels, reporter, ctxInfo) {
-    auto* ctx = ctxInfo.grContext();
+    auto ctx = ctxInfo.directContext();
     if (!ctx->priv().caps()->mipMapSupport()) {
         return;
     }

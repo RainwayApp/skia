@@ -209,6 +209,8 @@ typedef enum skcms_PixelFormat {
     skcms_PixelFormat_BGR_888,
     skcms_PixelFormat_RGBA_8888,
     skcms_PixelFormat_BGRA_8888,
+    skcms_PixelFormat_RGBA_8888_sRGB,   // Automatic sRGB encoding / decoding.
+    skcms_PixelFormat_BGRA_8888_sRGB,   // (Generally used with linear transfer functions.)
 
     skcms_PixelFormat_RGBA_1010102,
     skcms_PixelFormat_BGRA_1010102,
@@ -304,6 +306,9 @@ SKCMS_API bool skcms_PrimariesToXYZD50(float rx, float ry,
                                        float bx, float by,
                                        float wx, float wy,
                                        skcms_Matrix3x3* toXYZD50);
+
+// Call before your first call to skcms_Transform() to skip runtime CPU detection.
+SKCMS_API void skcms_DisableRuntimeCPUDetection(void);
 
 // Utilities for programmatically constructing profiles
 static inline void skcms_Init(skcms_ICCProfile* p) {

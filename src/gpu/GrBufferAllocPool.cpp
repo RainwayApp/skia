@@ -5,7 +5,7 @@
  * found in the LICENSE file.
  */
 
-#include "include/gpu/GrContext.h"
+#include "include/gpu/GrDirectContext.h"
 #include "include/gpu/GrTypes.h"
 #include "include/private/SkMacros.h"
 #include "src/core/SkSafeMath.h"
@@ -261,15 +261,8 @@ void* GrBufferAllocPool::makeSpaceAtLeast(size_t minSize,
             back.fBytesFree -= pad;
             fBytesInUse += pad;
 
-            // Give caller all remaining space in this block up to fallbackSize (but aligned
-            // correctly)
-            size_t size;
-            if (back.fBytesFree >= fallbackSize) {
-                SkASSERT(align_down(fallbackSize, alignment) == fallbackSize);
-                size = fallbackSize;
-            } else {
-                size = align_down(back.fBytesFree, alignment);
-            }
+            // Give caller all remaining space in this block (but aligned correctly)
+            size_t size = align_down(back.fBytesFree, alignment);
             *offset = usedBytes;
             *buffer = back.fBuffer;
             *actualSize = size;
@@ -333,7 +326,7 @@ void GrBufferAllocPool::putBack(size_t bytes) {
 }
 
 bool GrBufferAllocPool::createBlock(size_t requestSize) {
-    size_t size = SkTMax(requestSize, kDefaultBufferSize);
+    size_t size = std::max(requestSize, kDefaultBufferSize);
 
     VALIDATE();
 
@@ -430,13 +423,20 @@ void GrBufferAllocPool::flushCpuData(const BufferBlock& block, size_t flushSize)
 
 sk_sp<GrBuffer> GrBufferAllocPool::getBuffer(size_t size) {
     auto resourceProvider = fGpu->getContext()->priv().resourceProvider();
-
-    if (fGpu->caps()->preferClientSideDynamicBuffers()) {
-        bool mustInitialize = fGpu->caps()->mustClearUploadedBufferData();
-        return fCpuBufferCache ? fCpuBufferCache->makeBuffer(size, mustInitialize)
-                               : GrCpuBuffer::Make(size);
+    if (!fGpu->caps()->preferClientSideDynamicBuffers()) {
+        // Indirect draw commands for a polyfill must reside in a CPU buffer.
+        bool mayNeedIndirectDrawPolyfill = (fBufferType == GrGpuBufferType::kDrawIndirect) &&
+                                           (!fGpu->caps()->nativeDrawIndirectSupport() ||
+                                            fGpu->caps()->nativeDrawIndexedIndirectIsBroken());
+        if (!mayNeedIndirectDrawPolyfill) {
+            // We can create an actual GPU buffer.
+            return resourceProvider->createBuffer(size, fBufferType, kDynamic_GrAccessPattern);
+        }
     }
-    return resourceProvider->createBuffer(size, fBufferType, kDynamic_GrAccessPattern);
+    // Create a CPU buffer.
+    bool mustInitialize = fGpu->caps()->mustClearUploadedBufferData();
+    return fCpuBufferCache ? fCpuBufferCache->makeBuffer(size, mustInitialize)
+                           : GrCpuBuffer::Make(size);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

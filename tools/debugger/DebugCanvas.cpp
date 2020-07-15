@@ -18,7 +18,7 @@
 
 #include "include/gpu/GrContext.h"
 #include "src/gpu/GrAuditTrail.h"
-#include "src/gpu/GrContextPriv.h"
+#include "src/gpu/GrRecordingContextPriv.h"
 #include "src/gpu/GrRenderTargetContext.h"
 
 #include <string>
@@ -32,6 +32,7 @@ namespace {
     // Constants used in Annotations by Android for keeping track of layers
     static constexpr char kOffscreenLayerDraw[] = "OffscreenLayerDraw";
     static constexpr char kSurfaceID[] = "SurfaceID";
+    static constexpr char kAndroidClip[] = "AndroidDeviceClipRestriction";
 } // namespace
 
 class DebugPaintFilterCanvas : public SkPaintFilterCanvas {
@@ -63,8 +64,10 @@ DebugCanvas::DebugCanvas(int width, int height)
         , fOverdrawViz(false)
         , fClipVizColor(SK_ColorTRANSPARENT)
         , fDrawGpuOpBounds(false)
+        , fShowAndroidClip(false)
         , fnextDrawPictureLayerId(-1)
-        , fnextDrawImageRectLayerId(-1) {
+        , fnextDrawImageRectLayerId(-1)
+        , fAndroidClip(SkRect::MakeEmpty()) {
     // SkPicturePlayback uses the base-class' quickReject calls to cull clipped
     // operations. This can lead to problems in the debugger which expects all
     // the operations in the captured skp to appear in the debug canvas. To
@@ -141,10 +144,6 @@ void DebugCanvas::drawTo(SkCanvas* originalCanvas, int index, int m) {
 
     if (SkColorGetA(fClipVizColor) != 0) {
         finalCanvas->save();
-#define LARGE_COORD 1000000000
-        finalCanvas->clipRect(
-                SkRect::MakeLTRB(-LARGE_COORD, -LARGE_COORD, LARGE_COORD, LARGE_COORD),
-                kReverseDifference_SkClipOp);
         SkPaint clipPaint;
         clipPaint.setColor(fClipVizColor);
         finalCanvas->drawPaint(clipPaint);
@@ -154,6 +153,13 @@ void DebugCanvas::drawTo(SkCanvas* originalCanvas, int index, int m) {
     fMatrix = finalCanvas->getTotalMatrix();
     fClip   = finalCanvas->getDeviceClipBounds();
     finalCanvas->restoreToCount(saveCount);
+
+    if (fShowAndroidClip) {
+        // Draw visualization of android device clip restriction
+        SkPaint androidClipPaint;
+        androidClipPaint.setARGB(80, 255, 100, 0);
+        finalCanvas->drawRect(fAndroidClip, androidClipPaint);
+    }
 
     // draw any ops if required and issue a full reset onto GrAuditTrail
     if (at) {
@@ -222,7 +228,7 @@ DrawCommand* DebugCanvas::getDrawCommandAt(int index) {
 
 GrAuditTrail* DebugCanvas::getAuditTrail(SkCanvas* canvas) {
     GrAuditTrail* at  = nullptr;
-    GrContext*    ctx = canvas->getGrContext();
+    auto ctx = canvas->recordingContext();
     if (ctx) {
         at = ctx->priv().auditTrail();
     }
@@ -312,6 +318,23 @@ void DebugCanvas::onClipRegion(const SkRegion& region, SkClipOp op) {
     this->addDrawCommand(new ClipRegionCommand(region, op));
 }
 
+void DebugCanvas::onClipShader(sk_sp<SkShader> cs, SkClipOp op) {
+    this->addDrawCommand(new ClipShaderCommand(std::move(cs), op));
+}
+
+void DebugCanvas::didConcat44(const SkM44& m) {
+    // TODO
+    this->INHERITED::didConcat44(m);
+}
+
+void DebugCanvas::didScale(SkScalar x, SkScalar y) {
+    this->didConcat(SkMatrix::Scale(x, y));
+}
+
+void DebugCanvas::didTranslate(SkScalar x, SkScalar y) {
+    this->didConcat(SkMatrix::Translate(x, y));
+}
+
 void DebugCanvas::didConcat(const SkMatrix& matrix) {
     this->addDrawCommand(new ConcatCommand(matrix));
     this->INHERITED::didConcat(matrix);
@@ -335,37 +358,13 @@ void DebugCanvas::onDrawAnnotation(const SkRect& rect, const char key[], SkData*
             return; // don't record it
         }
     }
+    if (strcmp(kAndroidClip, key) == 0) {
+        // Store this frame's android device clip restriction for visualization later.
+        // This annotation stands in place of the androidFramework_setDeviceClipRestriction
+        // which is unrecordable.
+        fAndroidClip = rect;
+    }
     this->addDrawCommand(new DrawAnnotationCommand(rect, key, sk_ref_sp(value)));
-}
-
-void DebugCanvas::onDrawBitmap(const SkBitmap& bitmap,
-                               SkScalar        left,
-                               SkScalar        top,
-                               const SkPaint*  paint) {
-    this->addDrawCommand(new DrawBitmapCommand(bitmap, left, top, paint));
-}
-
-void DebugCanvas::onDrawBitmapLattice(const SkBitmap& bitmap,
-                                      const Lattice&  lattice,
-                                      const SkRect&   dst,
-                                      const SkPaint*  paint) {
-    this->addDrawCommand(new DrawBitmapLatticeCommand(bitmap, lattice, dst, paint));
-}
-
-void DebugCanvas::onDrawBitmapRect(const SkBitmap&   bitmap,
-                                   const SkRect*     src,
-                                   const SkRect&     dst,
-                                   const SkPaint*    paint,
-                                   SrcRectConstraint constraint) {
-    this->addDrawCommand(
-            new DrawBitmapRectCommand(bitmap, src, dst, paint, (SrcRectConstraint)constraint));
-}
-
-void DebugCanvas::onDrawBitmapNine(const SkBitmap& bitmap,
-                                   const SkIRect&  center,
-                                   const SkRect&   dst,
-                                   const SkPaint*  paint) {
-    this->addDrawCommand(new DrawBitmapNineCommand(bitmap, center, dst, paint));
 }
 
 void DebugCanvas::onDrawImage(const SkImage* image,
@@ -492,11 +491,8 @@ void DebugCanvas::onDrawPatch(const SkPoint  cubics[12],
 }
 
 void DebugCanvas::onDrawVerticesObject(const SkVertices*      vertices,
-                                       const SkVertices::Bone bones[],
-                                       int                    boneCount,
                                        SkBlendMode            bmode,
                                        const SkPaint&         paint) {
-    // TODO: ANIMATION NOT LOGGED
     this->addDrawCommand(
             new DrawVerticesCommand(sk_ref_sp(const_cast<SkVertices*>(vertices)), bmode, paint));
 }

@@ -117,7 +117,7 @@ sk_sp<SkSpecialSurface> SkSpecialSurface::MakeRaster(const SkImageInfo& info,
 
 #if SK_SUPPORT_GPU
 ///////////////////////////////////////////////////////////////////////////////
-#include "include/private/GrRecordingContext.h"
+#include "include/gpu/GrRecordingContext.h"
 #include "src/gpu/GrRecordingContextPriv.h"
 #include "src/gpu/SkGpuDevice.h"
 
@@ -127,9 +127,8 @@ public:
                          std::unique_ptr<GrRenderTargetContext> renderTargetContext,
                          int width, int height, const SkIRect& subset)
             : INHERITED(subset, &renderTargetContext->surfaceProps())
-            , fProxy(renderTargetContext->asTextureProxyRef()) {
-        // CONTEXT TODO: remove this use of 'backdoor' to create an SkGpuDevice
-        auto device = SkGpuDevice::Make(context->priv().backdoor(), std::move(renderTargetContext),
+            , fReadView(renderTargetContext->readSurfaceView()) {
+        auto device = SkGpuDevice::Make(context, std::move(renderTargetContext),
                                         SkGpuDevice::kUninit_InitContents);
         if (!device) {
             return;
@@ -143,21 +142,23 @@ public:
     }
 
     sk_sp<SkSpecialImage> onMakeImageSnapshot() override {
-        if (!fProxy) {
+        if (!fReadView.asTextureProxy()) {
             return nullptr;
         }
         GrColorType ct = SkColorTypeToGrColorType(fCanvas->imageInfo().colorType());
 
-        return SkSpecialImage::MakeDeferredFromGpu(fCanvas->getGrContext(),
+        // Note: SkSpecialImages can only be snapShotted once, so this call is destructive and we
+        // move fReadMove.
+        return SkSpecialImage::MakeDeferredFromGpu(fCanvas->recordingContext(),
                                                    this->subset(),
                                                    kNeedNewImageUniqueID_SpecialImage,
-                                                   std::move(fProxy), ct,
+                                                   std::move(fReadView), ct,
                                                    fCanvas->imageInfo().refColorSpace(),
                                                    &this->props());
     }
 
 private:
-    sk_sp<GrTextureProxy> fProxy;
+    GrSurfaceProxyView fReadView;
     typedef SkSpecialSurface_Base INHERITED;
 };
 

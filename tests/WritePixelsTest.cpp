@@ -11,10 +11,11 @@
 #include "include/private/SkImageInfoPriv.h"
 #include "src/core/SkMathPriv.h"
 #include "tests/Test.h"
+#include "tests/TestUtils.h"
 #include "tools/ToolUtils.h"
 
 #include "include/gpu/GrBackendSurface.h"
-#include "include/gpu/GrContext.h"
+#include "include/gpu/GrDirectContext.h"
 #include "src/gpu/GrContextPriv.h"
 #include "src/gpu/GrGpu.h"
 #include "src/gpu/GrProxyProvider.h"
@@ -142,8 +143,8 @@ static SkPMColor convert_to_PMColor(SkColorType ct, SkAlphaType at, uint32_t col
         color = premul(color);
     }
     switch (ct) {
-        case kRGBA_8888_SkColorType:
-        case kRGB_888x_SkColorType:  // fallthrough
+        case kRGBA_8888_SkColorType: // fallthrough
+        case kRGB_888x_SkColorType:
             color = SkSwizzle_RGBA_to_PMColor(color);
             break;
         case kBGRA_8888_SkColorType:
@@ -389,7 +390,7 @@ static void test_write_pixels(skiatest::Reporter* reporter, SkSurface* surface,
                 const SkColorType ct = gSrcConfigs[c].fColorType;
                 const SkAlphaType at = gSrcConfigs[c].fAlphaType;
 
-                bool isGPU = SkToBool(surface->getCanvas()->getGrContext());
+                bool isGPU = SkToBool(surface->getCanvas()->recordingContext());
                 fill_surface(surface);
                 SkBitmap bmp;
                 REPORTER_ASSERT(reporter, setup_bitmap(&bmp, ct, at, rect.width(),
@@ -443,20 +444,24 @@ static void test_write_pixels(skiatest::Reporter* reporter, GrContext* context, 
 }
 
 DEF_GPUTEST_FOR_RENDERING_CONTEXTS(WritePixels_Gpu, reporter, ctxInfo) {
-    test_write_pixels(reporter, ctxInfo.grContext(), 1);
+    test_write_pixels(reporter, ctxInfo.directContext(), 1);
 }
 
 DEF_GPUTEST_FOR_RENDERING_CONTEXTS(WritePixelsMSAA_Gpu, reporter, ctxInfo) {
-    test_write_pixels(reporter, ctxInfo.grContext(), 1);
+    test_write_pixels(reporter, ctxInfo.directContext(), 1);
 }
 
 static void test_write_pixels_non_texture(skiatest::Reporter* reporter,
                                           GrContext* context,
                                           int sampleCnt) {
-
+    // Dawn currently doesn't support writePixels to a texture-as-render-target.
+    // See http://skbug.com/10336.
+    if (GrBackendApi::kDawn == context->backend()) {
+        return;
+    }
     for (auto& origin : { kTopLeft_GrSurfaceOrigin, kBottomLeft_GrSurfaceOrigin }) {
-        GrBackendTexture backendTex = context->createBackendTexture(
-                DEV_W, DEV_H, kRGBA_8888_SkColorType,
+        GrBackendTexture backendTex;
+        CreateBackendTexture(context, &backendTex, DEV_W, DEV_H, kRGBA_8888_SkColorType,
                 SkColors::kTransparent, GrMipMapped::kNo, GrRenderable::kYes, GrProtected::kNo);
         if (!backendTex.isValid()) {
             continue;
@@ -473,11 +478,11 @@ static void test_write_pixels_non_texture(skiatest::Reporter* reporter,
 }
 
 DEF_GPUTEST_FOR_RENDERING_CONTEXTS(WritePixelsNonTexture_Gpu, reporter, ctxInfo) {
-    test_write_pixels_non_texture(reporter, ctxInfo.grContext(), 1);
+    test_write_pixels_non_texture(reporter, ctxInfo.directContext(), 1);
 }
 
 DEF_GPUTEST_FOR_RENDERING_CONTEXTS(WritePixelsNonTextureMSAA_Gpu, reporter, ctxInfo) {
-    test_write_pixels_non_texture(reporter, ctxInfo.grContext(), 4);
+    test_write_pixels_non_texture(reporter, ctxInfo.directContext(), 4);
 }
 
 static sk_sp<SkSurface> create_surf(GrContext* context, int width, int height) {
@@ -485,7 +490,7 @@ static sk_sp<SkSurface> create_surf(GrContext* context, int width, int height) {
                                              kRGBA_8888_SkColorType, kPremul_SkAlphaType);
 
     sk_sp<SkSurface> surf = SkSurface::MakeRenderTarget(context, SkBudgeted::kYes, ii);
-    surf->flush();
+    surf->flushAndSubmit();
     return surf;
 }
 
@@ -504,7 +509,7 @@ static sk_sp<SkImage> upload(const sk_sp<SkSurface>& surf, SkColor color) {
 // second writePixels takes effect (i.e., that writePixels correctly flushes
 // in between uses of the shared backing resource).
 DEF_GPUTEST_FOR_RENDERING_CONTEXTS(WritePixelsPendingIO, reporter, ctxInfo) {
-    GrContext* context = ctxInfo.grContext();
+    auto context = ctxInfo.directContext();
     GrProxyProvider* proxyProvider = context->priv().proxyProvider();
     const GrCaps* caps = context->priv().caps();
 
@@ -523,17 +528,14 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(WritePixelsPendingIO, reporter, ctxInfo) {
 
     {
         // Seed the resource cached with a scratch texture that will be reused by writePixels
-        GrSurfaceDesc desc;
-        desc.fWidth = 32;
-        desc.fHeight = 64;
-        desc.fConfig = kRGBA_8888_GrPixelConfig;
+        static constexpr SkISize kDims = {32, 64};
 
         const GrBackendFormat format = caps->getDefaultBackendFormat(GrColorType::kRGBA_8888,
                                                                      GrRenderable::kNo);
 
         sk_sp<GrTextureProxy> temp = proxyProvider->createProxy(
-                format, desc, GrRenderable::kNo, 1, kTopLeft_GrSurfaceOrigin, GrMipMapped::kNo,
-                SkBackingFit::kApprox, SkBudgeted::kYes, GrProtected::kNo);
+                format, kDims, GrRenderable::kNo, 1, GrMipMapped::kNo, SkBackingFit::kApprox,
+                SkBudgeted::kYes, GrProtected::kNo);
         temp->instantiate(context->priv().resourceProvider());
     }
 

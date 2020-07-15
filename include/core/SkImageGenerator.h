@@ -16,13 +16,15 @@
 #include "include/core/SkYUVASizeInfo.h"
 
 class GrRecordingContext;
-class GrTextureProxy;
+class GrSurfaceProxyView;
 class GrSamplerState;
 class SkBitmap;
 class SkData;
 class SkMatrix;
 class SkPaint;
 class SkPicture;
+
+enum class GrImageTexGenPolicy : int;
 
 class SK_API SkImageGenerator {
 public:
@@ -54,9 +56,13 @@ public:
      *  Can this generator be used to produce images that will be drawable to the specified context
      *  (or to CPU, if context is nullptr)?
      */
-    bool isValid(GrContext* context) const {
+    bool isValid(GrRecordingContext* context) const {
         return this->onIsValid(context);
     }
+
+    /** Deprecated.
+     */
+    bool isValid(GrContext* context) const;
 
     /**
      *  Decode into the given pixels, a block of memory of size at
@@ -138,12 +144,14 @@ public:
      *  at least has the mip levels allocated and the base layer filled in. If this is not possible,
      *  the generator is allowed to return a non mipped proxy, but this will have some additional
      *  overhead in later allocating mips and copying of the base layer.
+     *
+     *  GrImageTexGenPolicy determines whether or not a new texture must be created (and its budget
+     *  status) or whether this may (but is not required to) return a pre-existing texture that is
+     *  retained by the generator (kDraw).
      */
-    sk_sp<GrTextureProxy> generateTexture(GrRecordingContext*, const SkImageInfo& info,
-                                          const SkIPoint& origin,
-                                          bool willNeedMipMaps);
+    GrSurfaceProxyView generateTexture(GrRecordingContext*, const SkImageInfo& info,
+                                       const SkIPoint& origin, GrMipMapped, GrImageTexGenPolicy);
 
-    bool texturesAreCacheable() const { return this->onTexturesAreCacheable(); }
 #endif
 
     /**
@@ -171,23 +179,15 @@ protected:
     virtual sk_sp<SkData> onRefEncodedData() { return nullptr; }
     struct Options {};
     virtual bool onGetPixels(const SkImageInfo&, void*, size_t, const Options&) { return false; }
-    virtual bool onIsValid(GrContext*) const { return true; }
+    virtual bool onIsValid(GrRecordingContext*) const { return true; }
     virtual bool onQueryYUVA8(SkYUVASizeInfo*, SkYUVAIndex[SkYUVAIndex::kIndexCount],
                               SkYUVColorSpace*) const { return false; }
     virtual bool onGetYUVA8Planes(const SkYUVASizeInfo&, const SkYUVAIndex[SkYUVAIndex::kIndexCount],
                                   void*[4] /*planes*/) { return false; }
 #if SK_SUPPORT_GPU
-    enum class TexGenType {
-        kNone,           //image generator does not implement onGenerateTexture
-        kCheap,          //onGenerateTexture is implemented and it is fast (does not render offscreen)
-        kExpensive,      //onGenerateTexture is implemented and it is relatively slow
-    };
-
-    virtual TexGenType onCanGenerateTexture() const { return TexGenType::kNone; }
-    virtual sk_sp<GrTextureProxy> onGenerateTexture(GrRecordingContext*, const SkImageInfo&,
-                                                    const SkIPoint&,
-                                                    bool willNeedMipMaps);  // returns nullptr
-    virtual bool onTexturesAreCacheable() const { return true; }
+    // returns nullptr
+    virtual GrSurfaceProxyView onGenerateTexture(GrRecordingContext*, const SkImageInfo&,
+                                                 const SkIPoint&, GrMipMapped, GrImageTexGenPolicy);
 #endif
 
 private:

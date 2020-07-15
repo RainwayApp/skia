@@ -69,8 +69,9 @@ GrProcessorSet::GrProcessorSet(GrProcessorSet&& that)
         fFragmentProcessors[i] =
                 std::move(that.fFragmentProcessors[i + that.fFragmentProcessorOffset]);
     }
-    that.fColorFragmentProcessorCnt = 0;
     that.fFragmentProcessors.reset(0);
+    that.fColorFragmentProcessorCnt = 0;
+    that.fFragmentProcessorOffset = 0;
 }
 
 GrProcessorSet::~GrProcessorSet() {
@@ -86,10 +87,11 @@ SkString dump_fragment_processor_tree(const GrFragmentProcessor* fp, int indentC
     for (int i = 0; i < indentCnt; ++i) {
         indentString.append("    ");
     }
-    result.appendf("%s%s %s \n", indentString.c_str(), fp->name(), fp->dumpInfo().c_str());
-    if (fp->numChildProcessors()) {
+    result.appendf("%s%s %s \n", indentString.c_str(), fp ? fp->name() : "null",
+                   fp ? fp->dumpInfo().c_str() : "");
+    if (fp && fp->numChildProcessors()) {
         for (int i = 0; i < fp->numChildProcessors(); ++i) {
-            result += dump_fragment_processor_tree(&fp->childProcessor(i), indentCnt + 1);
+            result += dump_fragment_processor_tree(fp->childProcessor(i), indentCnt + 1);
         }
     }
     return result;
@@ -171,10 +173,9 @@ GrProcessorSet::Analysis GrProcessorSet::finalize(
     GrProcessorSet::Analysis analysis;
     analysis.fCompatibleWithCoverageAsAlpha = GrProcessorAnalysisCoverage::kLCD != coverageInput;
 
-    const std::unique_ptr<const GrFragmentProcessor>* fps =
+    const std::unique_ptr<GrFragmentProcessor>* fps =
             fFragmentProcessors.get() + fFragmentProcessorOffset;
-    GrColorFragmentProcessorAnalysis colorAnalysis(
-            colorInput, unique_ptr_address_as_pointer_address(fps), fColorFragmentProcessorCnt);
+    GrColorFragmentProcessorAnalysis colorAnalysis(colorInput, fps, fColorFragmentProcessorCnt);
     fps += fColorFragmentProcessorCnt;
     int n = this->numCoverageFragmentProcessors();
     bool hasCoverageFP = n > 0;
@@ -183,14 +184,14 @@ GrProcessorSet::Analysis GrProcessorSet::finalize(
         if (!fps[i]->compatibleWithCoverageAsAlpha()) {
             analysis.fCompatibleWithCoverageAsAlpha = false;
         }
-        coverageUsesLocalCoords |= fps[i]->usesLocalCoords();
+        coverageUsesLocalCoords |= fps[i]->usesVaryingCoords();
     }
     if (clip) {
         hasCoverageFP = hasCoverageFP || clip->numClipCoverageFragmentProcessors();
         for (int i = 0; i < clip->numClipCoverageFragmentProcessors(); ++i) {
             const GrFragmentProcessor* clipFP = clip->clipCoverageFragmentProcessor(i);
             analysis.fCompatibleWithCoverageAsAlpha &= clipFP->compatibleWithCoverageAsAlpha();
-            coverageUsesLocalCoords |= clipFP->usesLocalCoords();
+            coverageUsesLocalCoords |= clipFP->usesVaryingCoords();
         }
     }
     int colorFPsToEliminate = colorAnalysis.initialProcessorsToEliminate(overrideInputColor);
@@ -253,8 +254,7 @@ GrProcessorSet::Analysis GrProcessorSet::finalize(
 }
 
 void GrProcessorSet::visitProxies(const GrOp::VisitProxyFunc& func) const {
-    for (auto [sampler, fp] : GrFragmentProcessor::ProcessorSetTextureSamplerRange(*this)) {
-        bool mipped = (GrSamplerState::Filter::kMipMap == sampler.samplerState().filter());
-        func(sampler.view().proxy(), GrMipMapped(mipped));
+    for (int i = fFragmentProcessorOffset; i < fFragmentProcessors.count(); ++i) {
+        fFragmentProcessors[i]->visitProxies(func);
     }
 }

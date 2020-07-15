@@ -37,14 +37,6 @@ struct GrMockTextureInfo {
                fID == that.fID;
     }
 
-    GrPixelConfig pixelConfig() const {
-        if (fCompressionType == SkImage::CompressionType::kNone) {
-            return GrColorTypeToPixelConfig(fColorType);
-        } else {
-            return GrCompressionTypeToPixelConfig(fCompressionType);
-        }
-    }
-
     GrBackendFormat getBackendFormat() const;
 
     SkImage::CompressionType compressionType() const { return fCompressionType; }
@@ -78,10 +70,6 @@ struct GrMockRenderTargetInfo {
                fID == that.fID;
     }
 
-    GrPixelConfig pixelConfig() const {
-        return GrColorTypeToPixelConfig(fColorType);
-    }
-
     GrBackendFormat getBackendFormat() const;
 
     GrColorType colorType() const { return fColorType; }
@@ -108,8 +96,9 @@ struct GrMockOptions {
 
         fConfigOptions[(int)GrColorType::kBGRA_8888] = fConfigOptions[(int)GrColorType::kRGBA_8888];
 
-        fCompressedOptions[(int)SkImage::CompressionType::kETC1].fTexturable = true;
+        fCompressedOptions[(int)SkImage::CompressionType::kETC2_RGB8_UNORM].fTexturable = true;
         fCompressedOptions[(int)SkImage::CompressionType::kBC1_RGB8_UNORM].fTexturable = true;
+        fCompressedOptions[(int)SkImage::CompressionType::kBC1_RGBA8_UNORM].fTexturable = true;
     }
 
     struct ConfigOptions {
@@ -120,12 +109,13 @@ struct GrMockOptions {
 
     // GrCaps options.
     bool fMipMapSupport = false;
-    bool fInstanceAttribSupport = false;
+    bool fDrawInstancedSupport = false;
     bool fHalfFloatVertexAttributeSupport = false;
     uint32_t fMapBufferFlags = 0;
     int fMaxTextureSize = 2048;
     int fMaxRenderTargetSize = 2048;
     int fMaxVertexAttributes = 16;
+    int fMaxTessellationSegments = 0;
     ConfigOptions fConfigOptions[kGrColorTypeCnt];
     ConfigOptions fCompressedOptions[SkImage::kCompressionTypeCount];
 

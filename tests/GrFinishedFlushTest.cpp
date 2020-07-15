@@ -8,8 +8,9 @@
 #include "tests/Test.h"
 
 #include <chrono>
+#include "include/core/SkCanvas.h"
 #include "include/core/SkSurface.h"
-#include "include/gpu/GrContext.h"
+#include "include/gpu/GrDirectContext.h"
 #include "src/gpu/GrContextPriv.h"
 #include "src/gpu/GrGpu.h"
 
@@ -36,7 +37,7 @@ static void busy_wait_for_callback(int* count, int expectedValue, GrContext* ctx
 }
 
 DEF_GPUTEST_FOR_RENDERING_CONTEXTS(FlushFinishedProcTest, reporter, ctxInfo) {
-    GrContext* ctx = ctxInfo.grContext();
+    auto ctx = ctxInfo.directContext();
 
     SkImageInfo info =
             SkImageInfo::Make(8, 8, kRGBA_8888_SkColorType, kPremul_SkAlphaType);
@@ -46,9 +47,8 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(FlushFinishedProcTest, reporter, ctxInfo) {
     canvas->clear(SK_ColorGREEN);
     auto image = surface->makeImageSnapshot();
 
-    GrFlushInfo flushInfoSyncCpu;
-    flushInfoSyncCpu.fFlags = kSyncCpu_GrFlushFlag;
-    ctx->flush(flushInfoSyncCpu);
+    ctx->flush();
+    ctx->submit(true);
 
     int count = 0;
 
@@ -56,19 +56,23 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(FlushFinishedProcTest, reporter, ctxInfo) {
     flushInfoFinishedProc.fFinishedProc = testing_finished_proc;
     flushInfoFinishedProc.fFinishedContext = (void*)&count;
     // There is no work on the surface so flushing may immediately call the finished proc.
-    surface->flush(SkSurface::BackendSurfaceAccess::kNoAccess, flushInfoFinishedProc);
+    surface->flush(flushInfoFinishedProc);
+    ctx->submit();
     REPORTER_ASSERT(reporter, count == 0 || count == 1);
     // Busy waiting should detect that the work is done.
     busy_wait_for_callback(&count, 1, ctx, reporter);
 
     canvas->clear(SK_ColorRED);
 
-    surface->flush(SkSurface::BackendSurfaceAccess::kNoAccess, flushInfoFinishedProc);
+    surface->flush(flushInfoFinishedProc);
+    ctx->submit();
 
     bool expectAsyncCallback =
             ctx->backend() == GrBackendApi::kVulkan ||
             ((ctx->backend() == GrBackendApi::kOpenGL) && ctx->priv().caps()->fenceSyncSupport()) ||
-            ((ctx->backend() == GrBackendApi::kMetal) && ctx->priv().caps()->fenceSyncSupport());
+            ((ctx->backend() == GrBackendApi::kMetal) && ctx->priv().caps()->fenceSyncSupport()) ||
+            ctx->backend() == GrBackendApi::kDawn ||
+            ctx->backend() == GrBackendApi::kDirect3D;
     if (expectAsyncCallback) {
         // On Vulkan the command buffer we just submitted may or may not have finished immediately
         // so the finish proc may not have been called.
@@ -76,12 +80,14 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(FlushFinishedProcTest, reporter, ctxInfo) {
     } else {
         REPORTER_ASSERT(reporter, count == 2);
     }
-    ctx->flush(flushInfoSyncCpu);
+    ctx->flush();
+    ctx->submit(true);
     REPORTER_ASSERT(reporter, count == 2);
 
     // Test flushing via the SkImage
     canvas->drawImage(image, 0, 0);
     image->flush(ctx, flushInfoFinishedProc);
+    ctx->submit();
     if (expectAsyncCallback) {
         // On Vulkan the command buffer we just submitted may or may not have finished immediately
         // so the finish proc may not have been called.
@@ -89,12 +95,14 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(FlushFinishedProcTest, reporter, ctxInfo) {
     } else {
         REPORTER_ASSERT(reporter, count == 3);
     }
-    ctx->flush(flushInfoSyncCpu);
+    ctx->flush();
+    ctx->submit(true);
     REPORTER_ASSERT(reporter, count == 3);
 
     // Test flushing via the GrContext
     canvas->clear(SK_ColorBLUE);
     ctx->flush(flushInfoFinishedProc);
+    ctx->submit();
     if (expectAsyncCallback) {
         // On Vulkan the command buffer we just submitted may or may not have finished immediately
         // so the finish proc may not have been called.
@@ -102,25 +110,30 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(FlushFinishedProcTest, reporter, ctxInfo) {
     } else {
         REPORTER_ASSERT(reporter, count == 4);
     }
-    ctx->flush(flushInfoSyncCpu);
+    ctx->flush();
+    ctx->submit(true);
     REPORTER_ASSERT(reporter, count == 4);
 
     // There is no work on the surface so flushing may immediately call the finished proc.
     ctx->flush(flushInfoFinishedProc);
+    ctx->submit();
     REPORTER_ASSERT(reporter, count == 4 || count == 5);
     busy_wait_for_callback(&count, 5, ctx, reporter);
 
     count = 0;
     int count2 = 0;
     canvas->clear(SK_ColorGREEN);
-    surface->flush(SkSurface::BackendSurfaceAccess::kNoAccess, flushInfoFinishedProc);
+    surface->flush(flushInfoFinishedProc);
+    ctx->submit();
     // There is no work to be flushed here so this will return immediately, but make sure the
     // finished call from this proc isn't called till the previous surface flush also is finished.
     flushInfoFinishedProc.fFinishedContext = (void*)&count2;
     ctx->flush(flushInfoFinishedProc);
+    ctx->submit();
     REPORTER_ASSERT(reporter, count <= 1 && count2 <= count);
 
-    ctx->flush(flushInfoSyncCpu);
+    ctx->flush();
+    ctx->submit(true);
 
     REPORTER_ASSERT(reporter, count == 1);
     REPORTER_ASSERT(reporter, count == count2);

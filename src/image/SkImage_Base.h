@@ -10,6 +10,7 @@
 
 #include "include/core/SkImage.h"
 #include "include/core/SkSurface.h"
+#include "src/core/SkMipmap.h"
 #include <atomic>
 
 #if SK_SUPPORT_GPU
@@ -17,12 +18,12 @@
 #include "src/gpu/GrSurfaceProxyView.h"
 #include "src/gpu/GrTextureProxy.h"
 
-class GrRecordingContext;
 class GrTexture;
 #endif
 
 #include <new>
 
+class GrDirectContext;
 class GrSamplerState;
 class SkCachedData;
 struct SkYUVASizeInfo;
@@ -46,6 +47,33 @@ public:
     virtual bool onReadPixels(const SkImageInfo& dstInfo, void* dstPixels, size_t dstRowBytes,
                               int srcX, int srcY, CachingHint) const = 0;
 
+    virtual SkMipmap* onPeekMips() const { return nullptr; }
+
+    sk_sp<SkMipmap> refMips() const {
+        return sk_ref_sp(this->onPeekMips());
+    }
+
+    /**
+     * Default implementation does a rescale/read and then calls the callback.
+     */
+    virtual void onAsyncRescaleAndReadPixels(const SkImageInfo&,
+                                             const SkIRect& srcRect,
+                                             RescaleGamma,
+                                             SkFilterQuality,
+                                             ReadPixelsCallback,
+                                             ReadPixelsContext);
+    /**
+     * Default implementation does a rescale/read/yuv conversion and then calls the callback.
+     */
+    virtual void onAsyncRescaleAndReadPixelsYUV420(SkYUVColorSpace,
+                                                   sk_sp<SkColorSpace> dstColorSpace,
+                                                   const SkIRect& srcRect,
+                                                   const SkISize& dstSize,
+                                                   RescaleGamma,
+                                                   SkFilterQuality,
+                                                   ReadPixelsCallback,
+                                                   ReadPixelsContext);
+
     virtual GrContext* context() const { return nullptr; }
 
 #if SK_SUPPORT_GPU
@@ -57,22 +85,18 @@ public:
     // will return nullptr unless the YUVA planes have been converted to RGBA in which case
     // that single backing proxy will be returned.
     virtual GrTextureProxy* peekProxy() const { return nullptr; }
-    virtual sk_sp<GrTextureProxy> asTextureProxyRef(GrRecordingContext*) const { return nullptr; }
 
-    // This returns a copy of the GrSurfaceProxyView which essentially refs the contained
-    // GrSurfaceProxy. Callers should check if the proxy of the returned view is null.
-    virtual GrSurfaceProxyView asSurfaceProxyViewRef(GrRecordingContext*) const {
-        return GrSurfaceProxyView();
-    }
+    // If it exists, this returns a pointer to the GrSurfaceProxyView of image. The caller does not
+    // own the returned view and must copy it if they want to gain a ref to the internal proxy.
+    // If the returned view is not null, then it is guaranteed to have a valid proxy. Additionally
+    // this call will flatten a SkImage_GpuYUV to a single texture.
+    virtual const GrSurfaceProxyView* view(GrRecordingContext*) const { return nullptr; }
 
-    virtual sk_sp<GrTextureProxy> asTextureProxyRef(GrRecordingContext*, GrSamplerState,
-                                                    SkScalar scaleAdjust[2]) const = 0;
-    virtual sk_sp<GrTextureProxy> refPinnedTextureProxy(GrRecordingContext*,
-                                                        uint32_t* uniqueID) const {
-        return nullptr;
+    virtual GrSurfaceProxyView refView(GrRecordingContext*, GrMipMapped) const = 0;
+    virtual GrSurfaceProxyView refPinnedView(GrRecordingContext*, uint32_t* uniqueID) const {
+        return {};
     }
     virtual bool isYUVA() const { return false; }
-    virtual GrTexture* onGetTexture() const { return nullptr; }
 #endif
     virtual GrBackendTexture onGetBackendTexture(bool flushPendingGrContextIO,
                                                  GrSurfaceOrigin* origin) const;
@@ -81,7 +105,7 @@ public:
     // but only inspect them (or encode them).
     virtual bool getROPixels(SkBitmap*, CachingHint = kAllow_CachingHint) const = 0;
 
-    virtual sk_sp<SkImage> onMakeSubset(GrRecordingContext*, const SkIRect&) const = 0;
+    virtual sk_sp<SkImage> onMakeSubset(const SkIRect&, GrDirectContext*) const = 0;
 
     virtual sk_sp<SkCachedData> getPlanes(SkYUVASizeInfo*, SkYUVAIndex[4],
                                           SkYUVColorSpace*, const void* planes[4]);
@@ -101,7 +125,7 @@ public:
         fAddedToRasterCache.store(true);
     }
 
-    virtual bool onIsValid(GrContext*) const = 0;
+    virtual bool onIsValid(GrRecordingContext*) const = 0;
 
     virtual bool onPinAsTexture(GrContext*) const { return false; }
     virtual void onUnpinAsTexture(GrContext*) const {}
@@ -110,6 +134,11 @@ public:
                                                         SkColorType, sk_sp<SkColorSpace>) const = 0;
 
     virtual sk_sp<SkImage> onReinterpretColorSpace(sk_sp<SkColorSpace>) const = 0;
+
+    // on failure, returns nullptr
+    virtual sk_sp<SkImage> onMakeWithMipmaps(sk_sp<SkMipmap>) const {
+        return nullptr;
+    }
 
 protected:
     SkImage_Base(const SkImageInfo& info, uint32_t uniqueID);

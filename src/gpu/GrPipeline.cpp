@@ -15,23 +15,20 @@
 
 #include "src/gpu/ops/GrOp.h"
 
-GrPipeline::GrPipeline(const InitArgs& args, sk_sp<const GrXferProcessor> xferProcessor,
+GrPipeline::GrPipeline(const InitArgs& args,
+                       sk_sp<const GrXferProcessor> xferProcessor,
                        const GrAppliedHardClip& hardClip)
-        : fOutputSwizzle(args.fOutputSwizzle) {
+        : fWriteSwizzle(args.fWriteSwizzle) {
     fFlags = (Flags)args.fInputFlags;
     if (hardClip.hasStencilClip()) {
         fFlags |= Flags::kHasStencilClip;
     }
     if (hardClip.scissorState().enabled()) {
-        fFlags |= Flags::kScissorEnabled;
+        fFlags |= Flags::kScissorTestEnabled;
     }
 
     fWindowRectsState = hardClip.windowRectsState();
-    if (!args.fUserStencil->isDisabled(fFlags & Flags::kHasStencilClip)) {
-        fFlags |= Flags::kStencilEnabled;
-    }
-
-    fUserStencilSettings = args.fUserStencil;
+    this->setUserStencil(args.fUserStencil);
 
     fXferProcessor = std::move(xferProcessor);
 
@@ -72,20 +69,19 @@ GrXferBarrierType GrPipeline::xferBarrierType(GrTexture* texture, const GrCaps& 
     return this->getXferProcessor().xferBarrierType(caps);
 }
 
-GrPipeline::GrPipeline(GrScissorTest scissorTest, sk_sp<const GrXferProcessor> xp,
-                       const GrSwizzle& outputSwizzle, InputFlags inputFlags,
+GrPipeline::GrPipeline(GrScissorTest scissorTest,
+                       sk_sp<const GrXferProcessor> xp,
+                       const GrSwizzle& writeSwizzle,
+                       InputFlags inputFlags,
                        const GrUserStencilSettings* userStencil)
         : fWindowRectsState()
-        , fUserStencilSettings(userStencil)
         , fFlags((Flags)inputFlags)
         , fXferProcessor(std::move(xp))
-        , fOutputSwizzle(outputSwizzle) {
+        , fWriteSwizzle(writeSwizzle) {
     if (GrScissorTest::kEnabled == scissorTest) {
-        fFlags |= Flags::kScissorEnabled;
+        fFlags |= Flags::kScissorTestEnabled;
     }
-    if (!userStencil->isDisabled(false)) {
-        fFlags |= Flags::kStencilEnabled;
-    }
+    this->setUserStencil(userStencil);
 }
 
 void GrPipeline::genKey(GrProcessorKeyBuilder* b, const GrCaps& caps) const {
@@ -112,11 +108,17 @@ void GrPipeline::genKey(GrProcessorKeyBuilder* b, const GrCaps& caps) const {
     b->add32(blendKey);
 }
 
+void GrPipeline::visitTextureEffects(
+        const std::function<void(const GrTextureEffect&)>& func) const {
+    for (auto& fp : fFragmentProcessors) {
+        fp->visitTextureEffects(func);
+    }
+}
+
 void GrPipeline::visitProxies(const GrOp::VisitProxyFunc& func) const {
     // This iteration includes any clip coverage FPs
-    for (auto [sampler, fp] : GrFragmentProcessor::PipelineTextureSamplerRange(*this)) {
-        bool mipped = (GrSamplerState::Filter::kMipMap == sampler.samplerState().filter());
-        func(sampler.view().proxy(), GrMipMapped(mipped));
+    for (auto& fp : fFragmentProcessors) {
+        fp->visitProxies(func);
     }
     if (fDstProxyView.asTextureProxy()) {
         func(fDstProxyView.asTextureProxy(), GrMipMapped::kNo);

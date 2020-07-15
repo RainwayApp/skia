@@ -29,6 +29,7 @@ static SkBitmap create_bm() {
     SkBitmap bm;
     bm.allocPixels(ii);
     bm.eraseColor(SK_ColorTRANSPARENT);
+    bm.setImmutable();
     return bm;
 }
 
@@ -72,7 +73,7 @@ static void test_dont_find_if_diff_key(skiatest::Reporter* reporter,
     SkIRect clip2 = SkIRect::MakeWH(200, 200);
     SkImageFilterCacheKey key0(0, SkMatrix::I(), clip1, image->uniqueID(), image->subset());
     SkImageFilterCacheKey key1(1, SkMatrix::I(), clip1, image->uniqueID(), image->subset());
-    SkImageFilterCacheKey key2(0, SkMatrix::MakeTrans(5, 5), clip1,
+    SkImageFilterCacheKey key2(0, SkMatrix::Translate(5, 5), clip1,
                                    image->uniqueID(), image->subset());
     SkImageFilterCacheKey key3(0, SkMatrix::I(), clip2, image->uniqueID(), image->subset());
     SkImageFilterCacheKey key4(0, SkMatrix::I(), clip1, subset->uniqueID(), subset->subset());
@@ -197,32 +198,33 @@ DEF_TEST(ImageFilterCache_ImageBackedRaster, reporter) {
     test_image_backed(reporter, nullptr, srcImage);
 }
 
-#include "include/gpu/GrContext.h"
-#include "include/gpu/GrTexture.h"
+#include "include/gpu/GrDirectContext.h"
+#include "src/gpu/GrBitmapTextureMaker.h"
 #include "src/gpu/GrContextPriv.h"
 #include "src/gpu/GrProxyProvider.h"
 #include "src/gpu/GrResourceProvider.h"
 #include "src/gpu/GrSurfaceProxyPriv.h"
+#include "src/gpu/GrTexture.h"
 #include "src/gpu/GrTextureProxy.h"
 
-static sk_sp<GrTextureProxy> create_proxy(GrProxyProvider* proxyProvider) {
+static GrSurfaceProxyView create_proxy_view(GrRecordingContext* context) {
     SkBitmap srcBM = create_bm();
-    sk_sp<SkImage> srcImage(SkImage::MakeFromBitmap(srcBM));
-    return proxyProvider->createTextureProxy(srcImage, 1, SkBudgeted::kYes, SkBackingFit::kExact);
+    GrBitmapTextureMaker maker(context, srcBM, GrImageTexGenPolicy::kNew_Uncached_Budgeted);
+    return maker.view(GrMipMapped::kNo);
 }
 
 DEF_GPUTEST_FOR_RENDERING_CONTEXTS(ImageFilterCache_ImageBackedGPU, reporter, ctxInfo) {
-    GrContext* context = ctxInfo.grContext();
+    auto context = ctxInfo.directContext();
 
-    sk_sp<GrTextureProxy> srcProxy(create_proxy(context->priv().proxyProvider()));
-    if (!srcProxy) {
+    GrSurfaceProxyView srcView = create_proxy_view(context);
+    if (!srcView.proxy()) {
         return;
     }
 
-    if (!srcProxy->instantiate(context->priv().resourceProvider())) {
+    if (!srcView.proxy()->instantiate(context->priv().resourceProvider())) {
         return;
     }
-    GrTexture* tex = srcProxy->peekTexture();
+    GrTexture* tex = srcView.proxy()->peekTexture();
 
     GrBackendTexture backendTex = tex->getBackendTexture();
 
@@ -253,10 +255,10 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(ImageFilterCache_ImageBackedGPU, reporter, ct
 }
 
 DEF_GPUTEST_FOR_RENDERING_CONTEXTS(ImageFilterCache_GPUBacked, reporter, ctxInfo) {
-    GrContext* context = ctxInfo.grContext();
+    auto context = ctxInfo.directContext();
 
-    sk_sp<GrTextureProxy> srcProxy(create_proxy(context->priv().proxyProvider()));
-    if (!srcProxy) {
+    GrSurfaceProxyView srcView = create_proxy_view(context);
+    if (!srcView.proxy()) {
         return;
     }
 
@@ -265,7 +267,7 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(ImageFilterCache_GPUBacked, reporter, ctxInfo
     sk_sp<SkSpecialImage> fullImg(SkSpecialImage::MakeDeferredFromGpu(
                                                               context, full,
                                                               kNeedNewImageUniqueID_SpecialImage,
-                                                              srcProxy,
+                                                              srcView,
                                                               GrColorType::kRGBA_8888, nullptr));
 
     const SkIRect& subset = SkIRect::MakeXYWH(kPad, kPad, kSmallerSize, kSmallerSize);
@@ -273,7 +275,7 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(ImageFilterCache_GPUBacked, reporter, ctxInfo
     sk_sp<SkSpecialImage> subsetImg(SkSpecialImage::MakeDeferredFromGpu(
                                                                 context, subset,
                                                                 kNeedNewImageUniqueID_SpecialImage,
-                                                                srcProxy,
+                                                                std::move(srcView),
                                                                 GrColorType::kRGBA_8888, nullptr));
 
     test_find_existing(reporter, fullImg, subsetImg);
