@@ -59,7 +59,7 @@ void GrMtlCaps::initFeatureSet(MTLFeatureSet featureSet) {
 #endif
 
     // iOS Family group 3
-#ifdef SK_BUILD_FOR_IOS
+#if defined(SK_BUILD_FOR_IOS) && !TARGET_OS_TV
     if (@available(iOS 10.0, *)) {
         if (MTLFeatureSet_iOS_GPUFamily3_v2 == featureSet) {
             fPlatform = Platform::kIOS;
@@ -123,6 +123,57 @@ void GrMtlCaps::initFeatureSet(MTLFeatureSet featureSet) {
         fFamilyGroup = 1;
         fVersion = 1;
         return;
+    }
+#endif
+
+#if TARGET_OS_TV
+    if (@available(tvOS 12.0, *)) {
+        if (MTLFeatureSet_tvOS_GPUFamily2_v2 == featureSet) {
+            fPlatform = Platform::kIOS;
+            fFamilyGroup = 2;
+            fVersion = 2;
+            return;
+        }
+    }
+    if (@available(tvOS 11.0, *)) {
+        if (MTLFeatureSet_tvOS_GPUFamily2_v1 == featureSet) {
+            fPlatform = Platform::kIOS;
+            fFamilyGroup = 2;
+            fVersion = 1;
+            return;
+        }
+    }
+    if (@available(tvOS 12.0, *)) {
+        if (MTLFeatureSet_tvOS_GPUFamily1_v4 == featureSet) {
+            fPlatform = Platform::kIOS;
+            fFamilyGroup = 1;
+            fVersion = 4;
+            return;
+        }
+    }
+    if (@available(tvOS 11.0, *)) {
+        if (MTLFeatureSet_tvOS_GPUFamily1_v3 == featureSet) {
+            fPlatform = Platform::kIOS;
+            fFamilyGroup = 1;
+            fVersion = 3;
+            return;
+        }
+    }
+    if (@available(tvOS 10.0, *)) {
+        if (MTLFeatureSet_tvOS_GPUFamily1_v2 == featureSet) {
+            fPlatform = Platform::kIOS;
+            fFamilyGroup = 1;
+            fVersion = 2;
+            return;
+        }
+    }
+    if (@available(tvOS 9.0, *)) {
+        if (MTLFeatureSet_tvOS_GPUFamily1_v1 == featureSet) {
+            fPlatform = Platform::kIOS;
+            fFamilyGroup = 1;
+            fVersion = 1;
+            return;
+        }
     }
 #endif
     // No supported feature sets were found
