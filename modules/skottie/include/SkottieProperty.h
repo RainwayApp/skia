@@ -31,20 +31,27 @@ namespace skottie {
 using ColorPropertyValue   = SkColor;
 using OpacityPropertyValue = float;
 
+enum class TextPaintOrder : uint8_t {
+    kFillStroke,
+    kStrokeFill,
+};
+
 struct TextPropertyValue {
-    sk_sp<SkTypeface>  fTypeface;
-    SkString           fText;
-    float              fTextSize    = 0,
-                       fStrokeWidth = 0,
-                       fLineHeight  = 0,
-                       fAscent      = 0;
-    SkTextUtils::Align fHAlign      = SkTextUtils::kLeft_Align;
-    Shaper::VAlign     fVAlign      = Shaper::VAlign::kTop;
-    SkRect             fBox         = SkRect::MakeEmpty();
-    SkColor            fFillColor   = SK_ColorTRANSPARENT,
-                       fStrokeColor = SK_ColorTRANSPARENT;
-    bool               fHasFill     = false,
-                       fHasStroke   = false;
+    sk_sp<SkTypeface>    fTypeface;
+    SkString             fText;
+    float                fTextSize    = 0,
+                         fStrokeWidth = 0,
+                         fLineHeight  = 0,
+                         fAscent      = 0;
+    SkTextUtils::Align   fHAlign      = SkTextUtils::kLeft_Align;
+    Shaper::VAlign       fVAlign      = Shaper::VAlign::kTop;
+    Shaper::ResizePolicy fResize      = Shaper::ResizePolicy::kNone;
+    SkRect               fBox         = SkRect::MakeEmpty();
+    SkColor              fFillColor   = SK_ColorTRANSPARENT,
+                         fStrokeColor = SK_ColorTRANSPARENT;
+    TextPaintOrder       fPaintOrder  = TextPaintOrder::kFillStroke;
+    bool                 fHasFill     = false,
+                         fHasStroke   = false;
 
     bool operator==(const TextPropertyValue& other) const;
     bool operator!=(const TextPropertyValue& other) const;
@@ -118,6 +125,8 @@ public:
                                      const LazyHandle<TextPropertyHandle>&);
     virtual void onTransformProperty(const char node_name[],
                                      const LazyHandle<TransformPropertyHandle>&);
+    virtual void onEnterNode(const char node_name[]);
+    virtual void onLeavingNode(const char node_name[]);
 };
 
 } // namespace skottie

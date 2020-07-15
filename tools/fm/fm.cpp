@@ -4,12 +4,14 @@
 #include "experimental/svg/model/SkSVGDOM.h"
 #include "gm/gm.h"
 #include "include/codec/SkCodec.h"
+#include "include/core/SkCanvas.h"
 #include "include/core/SkColorSpace.h"
 #include "include/core/SkGraphics.h"
 #include "include/core/SkPicture.h"
 #include "include/core/SkPictureRecorder.h"
 #include "include/docs/SkPDFDocument.h"
 #include "include/gpu/GrContextOptions.h"
+#include "include/gpu/GrDirectContext.h"
 #include "include/private/SkTHash.h"
 #include "src/core/SkColorSpacePriv.h"
 #include "src/core/SkMD5.h"
@@ -51,6 +53,7 @@ static DEFINE_string(gamut ,   "srgb", "The color gamut for any raster backend."
 static DEFINE_string(tf    ,   "srgb", "The transfer function for any raster backend.");
 static DEFINE_bool  (legacy,    false, "Use a null SkColorSpace instead of --gamut and --tf?");
 static DEFINE_bool  (skvm  ,    false, "Use SkVMBlitter when supported?");
+static DEFINE_bool  (dylib ,    false, "Use SkVM via dylib?");
 
 static DEFINE_int   (samples ,         0, "Samples per pixel in GPU backends.");
 static DEFINE_bool  (stencils,      true, "If false, avoid stencil buffers in GPU backends.");
@@ -109,9 +112,12 @@ struct Result {
 static const Result ok = {Result::Ok,   {}},
                   skip = {Result::Skip, {}};
 
+static Result fail(const char* why) {
+    return { Result::Fail, SkString(why) };
+}
 template <typename... Args>
-static Result fail(const char* why, Args... args) {
-    return { Result::Fail, SkStringPrintf(why, args...) };
+static Result fail(const char* whyFmt, Args... args) {
+    return { Result::Fail, SkStringPrintf(whyFmt, args...) };
 }
 
 
@@ -126,7 +132,15 @@ static void init(Source* source, std::shared_ptr<skiagm::GM> gm) {
     source->size  = gm->getISize();
     source->tweak = [gm](GrContextOptions* options) { gm->modifyGrContextOptions(options); };
     source->draw  = [gm](SkCanvas* canvas) {
+        auto direct = GrAsDirectContext(canvas->recordingContext());
+
         SkString err;
+        switch (gm->gpuSetup(direct, canvas, &err)) {
+            case skiagm::DrawResult::kOk  : break;
+            case skiagm::DrawResult::kSkip: return skip;
+            case skiagm::DrawResult::kFail: return fail(err.c_str());
+        }
+
         switch (gm->draw(canvas, &err)) {
             case skiagm::DrawResult::kOk:   break;
             case skiagm::DrawResult::kSkip: return skip;
@@ -213,7 +227,8 @@ static void init(Source* source, const skiatest::Test& test) {
             SkString msg;
 
             void reportFailed(const skiatest::Failure& failure) override {
-                msg = failure.toString();
+                msg += failure.toString();
+                msg += "\n";
             }
         } reporter;
 
@@ -286,8 +301,7 @@ static sk_sp<SkImage> draw_with_gpu(std::function<bool(SkCanvas*)> draw,
     auto overrides = GrContextFactory::ContextOverrides::kNone;
     if (!FLAGS_stencils) { overrides |= GrContextFactory::ContextOverrides::kAvoidStencilBuffers; }
 
-    GrContext* context = factory->getContextInfo(api, overrides)
-                                 .grContext();
+    auto context = factory->getContextInfo(api, overrides).directContext();
 
     uint32_t flags = FLAGS_dit ? SkSurfaceProps::kUseDeviceIndependentFonts_Flag
                                : 0;
@@ -370,6 +384,7 @@ static sk_sp<SkImage> draw_with_gpu(std::function<bool(SkCanvas*)> draw,
 }
 
 extern bool gUseSkVMBlitter;
+extern bool gSkVMJITViaDylib;
 
 int main(int argc, char** argv) {
     CommandLineFlags::Parse(argc, argv);
@@ -378,9 +393,8 @@ int main(int argc, char** argv) {
     if (FLAGS_cpuDetect) {
         SkGraphics::Init();
     }
-    if (FLAGS_skvm) {
-        gUseSkVMBlitter = true;
-    }
+    gUseSkVMBlitter  = FLAGS_skvm;
+    gSkVMJITViaDylib = FLAGS_dylib;
 
     initializeEventTracingForTools();
     ToolUtils::SetDefaultFontMgr();
@@ -500,19 +514,21 @@ int main(int argc, char** argv) {
         { "mock"           , GrContextFactory::kMock_ContextType },
     };
     const FlagOption<SkColorType> kColorTypes[] = {
-        { "a8",           kAlpha_8_SkColorType },
-        { "g8",            kGray_8_SkColorType },
-        { "565",          kRGB_565_SkColorType },
-        { "4444",       kARGB_4444_SkColorType },
-        { "8888",             kN32_SkColorType },
-        { "888x",        kRGB_888x_SkColorType },
-        { "1010102", kRGBA_1010102_SkColorType },
-        { "101010x",  kRGB_101010x_SkColorType },
-        { "f16norm", kRGBA_F16Norm_SkColorType },
-        { "f16",         kRGBA_F16_SkColorType },
-        { "f32",         kRGBA_F32_SkColorType },
-        { "rgba",       kRGBA_8888_SkColorType },
-        { "bgra",       kBGRA_8888_SkColorType },
+        { "a8",               kAlpha_8_SkColorType },
+        { "g8",                kGray_8_SkColorType },
+        { "565",              kRGB_565_SkColorType },
+        { "4444",           kARGB_4444_SkColorType },
+        { "8888",                 kN32_SkColorType },
+        { "888x",            kRGB_888x_SkColorType },
+        { "1010102",     kRGBA_1010102_SkColorType },
+        { "101010x",      kRGB_101010x_SkColorType },
+        { "bgra1010102", kBGRA_1010102_SkColorType },
+        { "bgr101010x",   kBGR_101010x_SkColorType },
+        { "f16norm",     kRGBA_F16Norm_SkColorType },
+        { "f16",             kRGBA_F16_SkColorType },
+        { "f32",             kRGBA_F32_SkColorType },
+        { "rgba",           kRGBA_8888_SkColorType },
+        { "bgra",           kBGRA_8888_SkColorType },
     };
     const FlagOption<SkAlphaType> kAlphaTypes[] = {
         {   "premul",   kPremul_SkAlphaType },
@@ -565,7 +581,7 @@ int main(int argc, char** argv) {
                 case Result::Ok:   break;
                 case Result::Skip: return false;
                 case Result::Fail:
-                    SK_ABORT(result.failure.c_str());
+                    SK_ABORT("%s", result.failure.c_str());
             }
             return true;
         };

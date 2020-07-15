@@ -5,6 +5,12 @@
  * found in the LICENSE file.
  */
 
+// Make sure SkUserConfig.h is included so #defines are available on
+// Android.
+#include "include/core/SkTypes.h"
+#ifdef SK_ENABLE_ANDROID_UTILS
+#include "client_utils/android/FrontBufferedStream.h"
+#endif
 #include "include/codec/SkAndroidCodec.h"
 #include "include/codec/SkCodec.h"
 #include "include/core/SkBitmap.h"
@@ -32,7 +38,6 @@
 #include "include/private/SkMalloc.h"
 #include "include/private/SkTemplates.h"
 #include "include/third_party/skcms/skcms.h"
-#include "include/utils/SkFrontBufferedStream.h"
 #include "include/utils/SkRandom.h"
 #include "src/codec/SkCodecImageGenerator.h"
 #include "src/core/SkAutoMalloc.h"
@@ -150,7 +155,7 @@ static void test_in_stripes(skiatest::Reporter* r, SkCodec* codec, const SkImage
     for (int oddEven = 1; oddEven >= 0; oddEven--) {
         for (int y = oddEven * stripeHeight; y < height; y += 2 * stripeHeight) {
             SkIRect subset = SkIRect::MakeLTRB(0, y, info.width(),
-                                               SkTMin(y + stripeHeight, height));
+                                               std::min(y + stripeHeight, height));
             SkCodec::Options options;
             options.fSubset = &subset;
             if (SkCodec::kSuccess != codec->startIncrementalDecode(info, bm.getAddr(0, y),
@@ -455,9 +460,9 @@ static void check(skiatest::Reporter* r,
         REPORTER_ASSERT(r, gen->getPixels(info, bm.getPixels(), bm.rowBytes()));
         compare_to_good_digest(r, codecDigest, bm);
 
-#ifndef SK_PNG_DISABLE_TESTS
-        // Test using SkFrontBufferedStream, as Android does
-        auto bufferedStream = SkFrontBufferedStream::Make(
+#if !defined(SK_PNG_DISABLE_TESTS) && defined(SK_ENABLE_ANDROID_UTILS)
+        // Test using FrontBufferedStream, as Android does
+        auto bufferedStream = android::skia::FrontBufferedStream::Make(
                       SkMemoryStream::Make(std::move(fullData)), SkCodec::MinBufferedBytesNeeded());
         REPORTER_ASSERT(r, bufferedStream);
         codec = SkCodec::MakeFromStream(std::move(bufferedStream));
@@ -847,7 +852,7 @@ public:
         , fLimit(limit) {}
 
     size_t peek(void* buf, size_t bytes) const override {
-        return fStream.peek(buf, SkTMin(bytes, fLimit));
+        return fStream.peek(buf, std::min(bytes, fLimit));
     }
     size_t read(void* buf, size_t bytes) override {
         return fStream.read(buf, bytes);
@@ -1512,7 +1517,7 @@ DEF_TEST(Codec_InvalidAnimated, r) {
         auto result = codec->startIncrementalDecode(info, bm.getPixels(), bm.rowBytes(), &opts);
 
         if (result != SkCodec::kSuccess) {
-            ERRORF(r, "Failed to start decoding frame %i (out of %i) with error %i\n", i,
+            ERRORF(r, "Failed to start decoding frame %i (out of %zu) with error %i\n", i,
                    frameInfos.size(), result);
             continue;
         }
@@ -1772,5 +1777,62 @@ DEF_TEST(Codec_crbug807324, r) {
             ERRORF(r, "image should not be transparent! %i, %i is 0", i, j);
             return;
         }
+    }
+}
+
+DEF_TEST(Codec_F16_noColorSpace, r) {
+    const char* path = "images/color_wheel.png";
+    auto data = GetResourceAsData(path);
+    if (!data) {
+        return;
+    }
+
+    auto codec = SkCodec::MakeFromData(std::move(data));
+    SkImageInfo info = codec->getInfo().makeColorType(kRGBA_F16_SkColorType)
+                                       .makeColorSpace(nullptr);
+    test_info(r, codec.get(), info, SkCodec::kSuccess, nullptr);
+}
+
+// These test images have ICC profiles that do not map to an SkColorSpace.
+// Verify that decoding them with a null destination space does not perform
+// color space transformations.
+DEF_TEST(Codec_noConversion, r) {
+    const struct Rec {
+        const char* name;
+        SkColor color;
+    } recs[] = {
+      { "images/cmyk_yellow_224_224_32.jpg", 0xFFD8FC04 },
+      { "images/wide_gamut_yellow_224_224_64.jpeg",0xFFE0E040 },
+    };
+
+    for (const auto& rec : recs) {
+        auto data = GetResourceAsData(rec.name);
+        if (!data) {
+            continue;
+        }
+
+        auto codec = SkCodec::MakeFromData(std::move(data));
+        if (!codec) {
+            ERRORF(r, "Failed to create a codec from %s", rec.name);
+            continue;
+        }
+
+        const auto* profile = codec->getICCProfile();
+        if (!profile) {
+            ERRORF(r, "Expected %s to have a profile", rec.name);
+            continue;
+        }
+
+        auto cs = SkColorSpace::Make(*profile);
+        REPORTER_ASSERT(r, !cs.get());
+
+        SkImageInfo info = codec->getInfo().makeColorSpace(nullptr);
+        SkBitmap bm;
+        bm.allocPixels(info);
+        if (codec->getPixels(info, bm.getPixels(), bm.rowBytes()) != SkCodec::kSuccess) {
+            ERRORF(r, "Failed to decode %s", rec.name);
+            continue;
+        }
+        REPORTER_ASSERT(r, bm.getColor(0, 0) == rec.color);
     }
 }

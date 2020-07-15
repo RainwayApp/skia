@@ -28,20 +28,33 @@ bool GrDawnFormatIsRenderable(wgpu::TextureFormat format) {
     return true;
 }
 
-bool GrPixelConfigToDawnFormat(GrPixelConfig config, wgpu::TextureFormat* format) {
-    switch (config) {
-        case kRGBA_8888_GrPixelConfig:
-        case kRGBA_4444_GrPixelConfig:
-        case kRGB_565_GrPixelConfig:
-        case kGray_8_GrPixelConfig:
+bool GrColorTypeToDawnFormat(GrColorType ct, wgpu::TextureFormat* format) {
+    switch (ct) {
+        case GrColorType::kRGBA_8888:
             *format = wgpu::TextureFormat::RGBA8Unorm;
             return true;
-        case kBGRA_8888_GrPixelConfig:
+        case GrColorType::kBGRA_8888:
             *format = wgpu::TextureFormat::BGRA8Unorm;
             return true;
-        case kAlpha_8_GrPixelConfig:
-        case kAlpha_8_as_Red_GrPixelConfig:
+        case GrColorType::kAlpha_8:
+        case GrColorType::kGray_8:
             *format = wgpu::TextureFormat::R8Unorm;
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool GrDawnFormatToGrColorType(wgpu::TextureFormat format, GrColorType* colorType) {
+    switch (format) {
+        case wgpu::TextureFormat::RGBA8Unorm:
+            *colorType = GrColorType::kRGBA_8888;
+            return true;
+        case wgpu::TextureFormat::BGRA8Unorm:
+            *colorType = GrColorType::kBGRA_8888;
+            return true;
+        case wgpu::TextureFormat::R8Unorm:
+            *colorType = GrColorType::kR_8;
             return true;
         default:
             return false;

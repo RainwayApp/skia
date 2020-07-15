@@ -16,9 +16,11 @@
 #include "src/core/SkReadBuffer.h"
 #include "src/core/SkSpecialImage.h"
 #include "src/core/SkWriteBuffer.h"
+#include "src/gpu/SkGr.h"
 
 #if SK_SUPPORT_GPU
 #include "include/gpu/GrContext.h"
+#include "src/gpu/GrRecordingContextPriv.h"
 #include "src/gpu/GrTextureProxy.h"
 #include "src/gpu/effects/GrMatrixConvolutionEffect.h"
 #endif
@@ -291,11 +293,11 @@ void SkMatrixConvolutionImageFilterImpl::filterPixels(const SkBitmap& src,
                 }
             }
             int a = convolveAlpha
-                  ? SkClampMax(SkScalarFloorToInt(sumA * fGain + fBias), 255)
+                  ? SkTPin(SkScalarFloorToInt(sumA * fGain + fBias), 0, 255)
                   : 255;
-            int r = SkClampMax(SkScalarFloorToInt(sumR * fGain + fBias), a);
-            int g = SkClampMax(SkScalarFloorToInt(sumG * fGain + fBias), a);
-            int b = SkClampMax(SkScalarFloorToInt(sumB * fGain + fBias), a);
+            int r = SkTPin(SkScalarFloorToInt(sumR * fGain + fBias), 0, a);
+            int g = SkTPin(SkScalarFloorToInt(sumG * fGain + fBias), 0, a);
+            int b = SkTPin(SkScalarFloorToInt(sumB * fGain + fBias), 0, a);
             if (!convolveAlpha) {
                 a = SkGetPackedA32(PixelFetcher::fetch(src, x, y, bounds));
                 *dptr++ = SkPreMultiplyARGB(a, r, g, b);
@@ -359,25 +361,6 @@ void SkMatrixConvolutionImageFilterImpl::filterBorderPixels(const SkBitmap& src,
     }
 }
 
-#if SK_SUPPORT_GPU
-
-static GrTextureDomain::Mode convert_tilemodes(SkTileMode tileMode) {
-    switch (tileMode) {
-    case SkTileMode::kClamp:
-        return GrTextureDomain::kClamp_Mode;
-    case SkTileMode::kMirror:
-        return GrTextureDomain::kMirrorRepeat_Mode;
-    case SkTileMode::kRepeat:
-        return GrTextureDomain::kRepeat_Mode;
-    case SkTileMode::kDecal:
-        return GrTextureDomain::kDecal_Mode;
-    default:
-        SkASSERT(false);
-    }
-    return GrTextureDomain::kIgnore_Mode;
-}
-#endif
-
 sk_sp<SkSpecialImage> SkMatrixConvolutionImageFilterImpl::onFilterImage(const Context& ctx,
                                                                         SkIPoint* offset) const {
     SkIPoint inputOffset = SkIPoint::Make(0, 0);
@@ -408,9 +391,7 @@ sk_sp<SkSpecialImage> SkMatrixConvolutionImageFilterImpl::onFilterImage(const Co
     }
 
 #if SK_SUPPORT_GPU
-    // Note: if the kernel is too big, the GPU path falls back to SW
-    if (ctx.gpuBacked() &&
-        fKernelSize.width() * fKernelSize.height() <= MAX_KERNEL_SIZE) {
+    if (ctx.gpuBacked()) {
         auto context = ctx.getContext();
 
         // Ensure the input is in the destination color space. Typically applyCropRect will have
@@ -419,10 +400,10 @@ sk_sp<SkSpecialImage> SkMatrixConvolutionImageFilterImpl::onFilterImage(const Co
         // fall-back, which saves us from having to do the xform during the filter itself.
         input = ImageToColorSpace(input.get(), ctx.colorType(), ctx.colorSpace());
 
-        sk_sp<GrTextureProxy> inputProxy(input->asTextureProxyRef(context));
-        SkASSERT(inputProxy);
+        GrSurfaceProxyView inputView = input->view(context);
+        SkASSERT(inputView.asTextureProxy());
 
-        const auto isProtected = inputProxy->isProtected();
+        const auto isProtected = inputView.proxy()->isProtected();
 
         offset->fX = dstBounds.left();
         offset->fY = dstBounds.top();
@@ -431,15 +412,17 @@ sk_sp<SkSpecialImage> SkMatrixConvolutionImageFilterImpl::onFilterImage(const Co
         // Map srcBounds from input's logical image domain to that of the proxy
         srcBounds.offset(input->subset().x(), input->subset().y());
 
-        auto fp = GrMatrixConvolutionEffect::Make(std::move(inputProxy),
+        auto fp = GrMatrixConvolutionEffect::Make(context,
+                                                  std::move(inputView),
                                                   srcBounds,
                                                   fKernelSize,
                                                   fKernel,
                                                   fGain,
                                                   fBias,
                                                   fKernelOffset,
-                                                  convert_tilemodes(fTileMode),
-                                                  fConvolveAlpha);
+                                                  SkTileModeToWrapMode(fTileMode),
+                                                  fConvolveAlpha,
+                                                  *ctx.getContext()->priv().caps());
         if (!fp) {
             return nullptr;
         }

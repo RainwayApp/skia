@@ -15,6 +15,8 @@ TextStyle::TextStyle() : fFontStyle() {
     // value to indicate no decoration color was set.
     fDecoration.fColor = SK_ColorTRANSPARENT;
     fDecoration.fStyle = TextDecorationStyle::kSolid;
+    // TODO: switch back to kGaps when (if) switching flutter to skparagraph
+    fDecoration.fMode = TextDecorationMode::kThrough;
     // Thickness is applied as a multiplier to the default thickness of the font.
     fDecoration.fThicknessMultiplier = 1.0;
     fFontSize = 14.0;
@@ -107,24 +109,23 @@ bool TextStyle::equalsByFonts(const TextStyle& that) const {
     return !fIsPlaceholder && !that.fIsPlaceholder &&
            fFontStyle == that.fFontStyle &&
            fFontFamilies == that.fFontFamilies &&
-           fLetterSpacing == that.fLetterSpacing &&
-           fWordSpacing == that.fWordSpacing &&
-           fHeight == that.fHeight &&
-           fFontSize == that.fFontSize &&
+           fFontFeatures == that.fFontFeatures &&
+           nearlyEqual(fLetterSpacing, that.fLetterSpacing) &&
+           nearlyEqual(fWordSpacing, that.fWordSpacing) &&
+           nearlyEqual(fHeight, that.fHeight) &&
+           nearlyEqual(fFontSize, that.fFontSize) &&
            fLocale == that.fLocale;
 }
 
 bool TextStyle::matchOneAttribute(StyleType styleType, const TextStyle& other) const {
     switch (styleType) {
         case kForeground:
-            if (fHasForeground) {
-                return other.fHasForeground && fForeground == other.fForeground;
-            } else {
-                return !other.fHasForeground && fColor == other.fColor;
-            }
+            return (!fHasForeground && !other.fHasForeground && fColor == other.fColor) ||
+                   ( fHasForeground &&  other.fHasForeground && fForeground == other.fForeground);
 
         case kBackground:
-            return (fHasBackground == other.fHasBackground && fBackground == other.fBackground);
+            return (!fHasBackground && !other.fHasBackground) ||
+                   ( fHasBackground &&  other.fHasBackground && fBackground == other.fBackground);
 
         case kShadow:
             if (fTextShadows.size() != other.fTextShadows.size()) {
@@ -152,8 +153,11 @@ bool TextStyle::matchOneAttribute(StyleType styleType, const TextStyle& other) c
 
         case kFont:
             // TODO: should not we take typefaces in account?
-            return fFontStyle == other.fFontStyle && fFontFamilies == other.fFontFamilies &&
-                   fFontSize == other.fFontSize && fHeight == other.fHeight;
+            return fFontStyle == other.fFontStyle &&
+                   fLocale == other.fLocale &&
+                   fFontFamilies == other.fFontFamilies &&
+                   fFontSize == other.fFontSize &&
+                   fHeight == other.fHeight;
         default:
             SkASSERT(false);
             return false;
@@ -179,11 +183,12 @@ void TextStyle::getFontMetrics(SkFontMetrics* metrics) const {
 }
 
 bool PlaceholderStyle::equals(const PlaceholderStyle& other) const {
-    return this->fWidth == other.fWidth &&
-           this->fHeight == other.fHeight &&
-           this->fAlignment == other.fAlignment &&
-           this->fBaseline == other.fBaseline &&
-           this->fBaselineOffset == other.fBaselineOffset;
+    return nearlyEqual(fWidth, other.fWidth) &&
+           nearlyEqual(fHeight, other.fHeight) &&
+           fAlignment == other.fAlignment &&
+           fBaseline == other.fBaseline &&
+           (fAlignment != PlaceholderAlignment::kBaseline ||
+            nearlyEqual(fBaselineOffset, other.fBaselineOffset));
 }
 
 }  // namespace textlayout

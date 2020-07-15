@@ -21,12 +21,13 @@
 #include "src/gpu/gradients/generated/GrTextureGradientColorizer.h"
 #include "src/gpu/gradients/generated/GrUnrolledBinaryGradientColorizer.h"
 
-#include "include/private/GrRecordingContext.h"
+#include "include/gpu/GrRecordingContext.h"
 #include "src/gpu/GrCaps.h"
 #include "src/gpu/GrColor.h"
 #include "src/gpu/GrColorInfo.h"
 #include "src/gpu/GrRecordingContextPriv.h"
 #include "src/gpu/SkGr.h"
+#include "src/gpu/effects/GrTextureEffect.h"
 
 // Intervals smaller than this (that aren't hard stops) on low-precision-only devices force us to
 // use the textured gradient
@@ -59,14 +60,16 @@ static std::unique_ptr<GrFragmentProcessor> make_textured_colorizer(const SkPMCo
     SkASSERT(1 == bitmap.height() && SkIsPow2(bitmap.width()));
     SkASSERT(bitmap.isImmutable());
 
-    sk_sp<GrTextureProxy> proxy = GrMakeCachedBitmapProxy(
-            args.fContext->priv().proxyProvider(), bitmap);
-    if (proxy == nullptr) {
+    auto view = GrMakeCachedBitmapProxyView(args.fContext, bitmap);
+    if (!view.proxy()) {
         SkDebugf("Gradient won't draw. Could not create texture.");
         return nullptr;
     }
-
-    return GrTextureGradientColorizer::Make(std::move(proxy));
+    // TODO: When we start sampling colorizers with explicit coords rather than using sk_InColor
+    // the GrTextureEffect can simply be the colorizer.
+    auto m = SkMatrix::Scale(view.width(), 1.f);
+    auto te = GrTextureEffect::Make(std::move(view), alphaType, m, GrSamplerState::Filter::kBilerp);
+    return GrTextureGradientColorizer::Make(std::move(te));
 }
 
 // Analyze the shader's color stops and positions and chooses an appropriate colorizer to represent

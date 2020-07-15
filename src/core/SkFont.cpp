@@ -13,8 +13,8 @@
 #include "src/core/SkDraw.h"
 #include "src/core/SkFontPriv.h"
 #include "src/core/SkPaintDefaults.h"
+#include "src/core/SkScalerCache.h"
 #include "src/core/SkScalerContext.h"
-#include "src/core/SkStrike.h"
 #include "src/core/SkStrikeCache.h"
 #include "src/core/SkStrikeSpec.h"
 #include "src/core/SkTLazy.h"
@@ -27,7 +27,7 @@
 #define kDefault_Hinting    SkPaintDefaults_Hinting
 
 static inline SkScalar valid_size(SkScalar size) {
-    return SkTMax<SkScalar>(0, size);
+    return std::max<SkScalar>(0, size);
 }
 
 SkFont::SkFont(sk_sp<SkTypeface> face, SkScalar size, SkScalar scaleX, SkScalar skewX)
@@ -270,7 +270,7 @@ void SkFont::getWidthsBounds(const SkGlyphID glyphIDs[],
     SkScalar scale = strikeSpec.strikeToSourceRatio();
 
     if (bounds) {
-        SkMatrix scaleMat = SkMatrix::MakeScale(scale);
+        SkMatrix scaleMat = SkMatrix::Scale(scale, scale);
         SkRect* cursor = bounds;
         for (auto glyph : glyphs) {
             scaleMat.mapRectScaleTranslate(cursor++, glyph->rect());
@@ -316,7 +316,7 @@ void SkFont::getPaths(const SkGlyphID glyphIDs[], int count,
                       void (*proc)(const SkPath*, const SkMatrix&, void*), void* ctx) const {
     SkFont font(*this);
     SkScalar scale = font.setupForAsPaths(nullptr);
-    const SkMatrix mx = SkMatrix::MakeScale(scale);
+    const SkMatrix mx = SkMatrix::Scale(scale, scale);
 
     SkStrikeSpec strikeSpec = SkStrikeSpec::MakeWithNoDevice(font);
     SkBulkGlyphMetricsAndPaths paths{strikeSpec};
@@ -352,7 +352,7 @@ SkScalar SkFont::getMetrics(SkFontMetrics* metrics) const {
         metrics = &storage;
     }
 
-    auto cache = strikeSpec.findOrCreateExclusiveStrike();
+    auto cache = strikeSpec.findOrCreateStrike();
     *metrics = cache->getFontMetrics();
 
     if (strikeSpec.strikeToSourceRatio() != 1) {

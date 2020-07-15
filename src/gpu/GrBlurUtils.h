@@ -16,9 +16,10 @@ class GrPaint;
 class GrRecordingContext;
 class GrRenderTarget;
 class GrRenderTargetContext;
-class GrShape;
+class GrStyledShape;
 class GrStyle;
 struct SkIRect;
+class SkMatrixProvider;
 class SkMaskFilter;
 class SkMatrix;
 class SkPaint;
@@ -35,10 +36,10 @@ namespace GrBlurUtils {
      */
     void drawShapeWithMaskFilter(GrRecordingContext*,
                                  GrRenderTargetContext*,
-                                 const GrClip&,
+                                 const GrClip*,
                                  const SkPaint&,
-                                 const SkMatrix& viewMatrix,
-                                 const GrShape&);
+                                 const SkMatrixProvider&,
+                                 const GrStyledShape&);
 
     /**
      * Draw a shape handling the mask filter. The mask filter is not optional.
@@ -46,8 +47,8 @@ namespace GrBlurUtils {
      */
     void drawShapeWithMaskFilter(GrRecordingContext*,
                                  GrRenderTargetContext*,
-                                 const GrClip&,
-                                 const GrShape&,
+                                 const GrClip*,
+                                 const GrStyledShape&,
                                  GrPaint&&,
                                  const SkMatrix& viewMatrix,
                                  const SkMaskFilter*);

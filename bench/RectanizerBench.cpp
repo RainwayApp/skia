@@ -10,8 +10,8 @@
 #include "include/private/SkTDArray.h"
 #include "include/utils/SkRandom.h"
 
-#include "src/gpu/GrRectanizer_pow2.h"
-#include "src/gpu/GrRectanizer_skyline.h"
+#include "src/gpu/GrRectanizerPow2.h"
+#include "src/gpu/GrRectanizerSkyline.h"
 
 /**
  * This bench exercises Ganesh' GrRectanizer classes. It exercises the following

@@ -8,7 +8,6 @@
 #ifndef SkImage_Gpu_DEFINED
 #define SkImage_Gpu_DEFINED
 
-#include "include/gpu/GrContext.h"
 #include "src/core/SkImagePriv.h"
 #include "src/gpu/GrGpuResourcePriv.h"
 #include "src/gpu/GrSurfaceProxyPriv.h"
@@ -16,6 +15,7 @@
 #include "src/gpu/SkGr.h"
 #include "src/image/SkImage_GpuBase.h"
 
+class GrContext;
 class GrTexture;
 
 class SkBitmap;
@@ -23,7 +23,7 @@ struct SkYUVAIndex;
 
 class SkImage_Gpu : public SkImage_GpuBase {
 public:
-    SkImage_Gpu(sk_sp<GrContext>, uint32_t uniqueID, SkAlphaType, GrSurfaceProxyView,
+    SkImage_Gpu(sk_sp<GrContext>, uint32_t uniqueID, GrSurfaceProxyView, SkColorType, SkAlphaType,
                 sk_sp<SkColorSpace>);
     ~SkImage_Gpu() override;
 
@@ -32,15 +32,12 @@ public:
     GrTextureProxy* peekProxy() const override {
         return fView.asTextureProxy();
     }
-    sk_sp<GrTextureProxy> asTextureProxyRef(GrRecordingContext*) const override {
-        return fView.asTextureProxyRef();
-    }
 
-    GrSurfaceProxyView asSurfaceProxyViewRef(GrRecordingContext* context) const override {
-        return fView;
-    }
-    const GrSurfaceProxyView& getSurfaceProxyView(GrRecordingContext* context) const override {
-        return fView;
+    const GrSurfaceProxyView* view(GrRecordingContext* context) const override {
+        if (!fView.proxy()) {
+            return nullptr;
+        }
+        return &fView;
     }
 
     bool onIsTextureBacked() const override {
@@ -52,6 +49,22 @@ public:
                                                 SkColorType, sk_sp<SkColorSpace>) const final;
 
     sk_sp<SkImage> onReinterpretColorSpace(sk_sp<SkColorSpace>) const final;
+
+    void onAsyncRescaleAndReadPixels(const SkImageInfo&,
+                                     const SkIRect& srcRect,
+                                     RescaleGamma,
+                                     SkFilterQuality,
+                                     ReadPixelsCallback,
+                                     ReadPixelsContext) override;
+
+    void onAsyncRescaleAndReadPixelsYUV420(SkYUVColorSpace,
+                                           sk_sp<SkColorSpace>,
+                                           const SkIRect& srcRect,
+                                           const SkISize& dstSize,
+                                           RescaleGamma,
+                                           SkFilterQuality,
+                                           ReadPixelsCallback,
+                                           ReadPixelsContext) override;
 
     /**
      * This is the implementation of SkDeferredDisplayListRecorder::makePromiseImage.

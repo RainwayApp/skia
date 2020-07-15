@@ -6,11 +6,13 @@
  */
 
 #include "include/gpu/GrContext.h"
-#include "include/gpu/GrSurface.h"
-#include "include/gpu/GrTexture.h"
+#include "src/core/SkCompressedDataUtils.h"
+#include "src/gpu/GrBackendUtils.h"
 #include "src/gpu/GrRenderTarget.h"
 #include "src/gpu/GrResourceProvider.h"
+#include "src/gpu/GrSurface.h"
 #include "src/gpu/GrSurfacePriv.h"
+#include "src/gpu/GrTexture.h"
 
 #include "src/core/SkMathPriv.h"
 #include "src/gpu/SkGr.h"
@@ -33,9 +35,10 @@ size_t GrSurface::ComputeSize(const GrCaps& caps,
         dimensions = GrResourceProvider::MakeApprox(dimensions);
     }
 
-    SkImage::CompressionType compressionType = caps.compressionType(format);
+    SkImage::CompressionType compressionType = GrBackendFormatToCompressionType(format);
     if (compressionType != SkImage::CompressionType::kNone) {
-        colorSize = GrCompressedFormatDataSize(compressionType, dimensions, mipMapped);
+        colorSize = SkCompressedFormatDataSize(compressionType, dimensions,
+                                               mipMapped == GrMipMapped::kYes);
     } else {
         colorSize = (size_t)dimensions.width() * dimensions.height() * caps.bytesPerPixel(format);
     }

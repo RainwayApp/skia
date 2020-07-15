@@ -33,7 +33,7 @@
 #define PROT_CONTENT_EXT_STR "EGL_EXT_protected_content"
 #define EGL_PROTECTED_CONTENT_EXT 0x32C0
 
-#define VK_CALL(X) gpu->vkInterface()->fFunctions.f##X;
+#define VK_CALL(X) gpu->vkInterface()->fFunctions.f##X
 
 namespace GrAHardwareBufferUtils {
 
@@ -486,6 +486,7 @@ static GrBackendTexture make_vk_backend_texture(
     // "foreign" device we can leave them as external.
     imageInfo.fCurrentQueueFamily = VK_QUEUE_FAMILY_EXTERNAL;
     imageInfo.fYcbcrConversionInfo = *ycbcrConversion;
+    imageInfo.fSharingMode = imageCreateInfo.sharingMode;
 
     *deleteProc = delete_vk_image;
     *updateProc = update_vk_image;

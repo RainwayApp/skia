@@ -11,11 +11,13 @@
 #include "include/core/SkDeferredDisplayListRecorder.h"
 #include "include/core/SkYUVAIndex.h"
 #include "include/gpu/GrBackendSurface.h"
-#include "include/gpu/GrContext.h"
 #include "include/private/GrTypesPriv.h"
 #include "src/image/SkImage_Base.h"
 
 class GrColorSpaceXform;
+class GrContext;
+class GrDirectContext;
+class GrRenderTargetContext;
 class SkColorSpace;
 
 class SkImage_GpuBase : public SkImage_Base {
@@ -23,34 +25,25 @@ public:
     GrContext* context() const final { return fContext.get(); }
 
     bool getROPixels(SkBitmap*, CachingHint) const final;
-    sk_sp<SkImage> onMakeSubset(GrRecordingContext*, const SkIRect& subset) const final;
+    sk_sp<SkImage> onMakeSubset(const SkIRect& subset, GrDirectContext*) const final;
 
     bool onReadPixels(const SkImageInfo& dstInfo, void* dstPixels, size_t dstRB,
                       int srcX, int srcY, CachingHint) const override;
 
-    sk_sp<GrTextureProxy> asTextureProxyRef(GrRecordingContext* context) const override {
-        // we shouldn't end up calling this
-        SkASSERT(false);
-        return this->INHERITED::asTextureProxyRef(context);
-    }
+    GrSurfaceProxyView refView(GrRecordingContext*, GrMipMapped) const final;
 
-    virtual const GrSurfaceProxyView& getSurfaceProxyView(GrRecordingContext* context) const = 0;
-
-    sk_sp<GrTextureProxy> asTextureProxyRef(GrRecordingContext*, GrSamplerState,
-                                            SkScalar scaleAdjust[2]) const final;
-
-    sk_sp<GrTextureProxy> refPinnedTextureProxy(GrRecordingContext* context,
-                                                uint32_t* uniqueID) const final {
+    GrSurfaceProxyView refPinnedView(GrRecordingContext* context, uint32_t* uniqueID) const final {
         *uniqueID = this->uniqueID();
-        return this->asTextureProxyRef(context);
+        SkASSERT(this->view(context));
+        return *this->view(context);
     }
 
     GrBackendTexture onGetBackendTexture(bool flushPendingGrContextIO,
                                          GrSurfaceOrigin* origin) const final;
 
-    GrTexture* onGetTexture() const final;
+    GrTexture* getTexture() const;
 
-    bool onIsValid(GrContext*) const final;
+    bool onIsValid(GrRecordingContext*) const final;
 
 #if GR_TEST_UTILS
     void resetContext(sk_sp<GrContext> newContext);
@@ -64,7 +57,8 @@ public:
     static bool MakeTempTextureProxies(GrContext* ctx, const GrBackendTexture yuvaTextures[],
                                        int numTextures, const SkYUVAIndex [4],
                                        GrSurfaceOrigin imageOrigin,
-                                       sk_sp<GrTextureProxy> tempTextureProxies[4]);
+                                       GrSurfaceProxyView tempViews[4],
+                                       sk_sp<GrRefCntedCallback> releaseHelper);
 
     static SkAlphaType GetAlphaTypeFromYUVAIndices(const SkYUVAIndex yuvaIndices[4]) {
         return -1 != yuvaIndices[SkYUVAIndex::kA_Index].fIndex ? kPremul_SkAlphaType
@@ -88,16 +82,17 @@ protected:
     // proxy along with the TextureFulfillProc and TextureReleaseProc. PromiseDoneProc must not
     // be null.
     static sk_sp<GrTextureProxy> MakePromiseImageLazyProxy(
-            GrContext*, int width, int height, GrSurfaceOrigin, GrColorType, GrBackendFormat,
-            GrMipMapped, PromiseImageTextureFulfillProc, PromiseImageTextureReleaseProc,
+            GrContext*, int width, int height, GrBackendFormat, GrMipMapped,
+            PromiseImageTextureFulfillProc, PromiseImageTextureReleaseProc,
             PromiseImageTextureDoneProc, PromiseImageTextureContext, PromiseImageApiVersion);
 
     static bool RenderYUVAToRGBA(GrContext* ctx, GrRenderTargetContext* renderTargetContext,
                                  const SkRect& rect, SkYUVColorSpace yuvColorSpace,
                                  sk_sp<GrColorSpaceXform> colorSpaceXform,
-                                 const sk_sp<GrTextureProxy> proxies[4],
+                                 GrSurfaceProxyView views[4],
                                  const SkYUVAIndex yuvaIndices[4]);
 
+    // TODO: Migrate this to something much weaker, such as GrContextThreadSafeProxy.
     sk_sp<GrContext> fContext;
 
 private:

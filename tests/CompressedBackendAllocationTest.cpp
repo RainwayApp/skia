@@ -5,9 +5,12 @@
  * found in the LICENSE file.
  */
 
-#include "include/gpu/GrContext.h"
+#include "include/core/SkCanvas.h"
+#include "include/gpu/GrDirectContext.h"
 #include "src/core/SkAutoPixmapStorage.h"
-#include "src/core/SkMipMap.h"
+#include "src/core/SkCompressedDataUtils.h"
+#include "src/core/SkMipmap.h"
+#include "src/gpu/GrBackendUtils.h"
 #include "src/gpu/GrContextPriv.h"
 #include "src/image/SkImage_Base.h"
 #include "tests/Test.h"
@@ -33,11 +36,10 @@ static void check_solid_pixmap(skiatest::Reporter* reporter,
 
 // Create an SkImage to wrap 'backendTex'
 sk_sp<SkImage> create_image(GrContext* context, const GrBackendTexture& backendTex) {
-    const GrCaps* caps = context->priv().caps();
+    SkImage::CompressionType compression =
+            GrBackendFormatToCompressionType(backendTex.getBackendFormat());
 
-    SkImage::CompressionType compression = caps->compressionType(backendTex.getBackendFormat());
-
-    SkAlphaType at = GrCompressionTypeIsOpaque(compression) ? kOpaque_SkAlphaType
+    SkAlphaType at = SkCompressionTypeIsOpaque(compression) ? kOpaque_SkAlphaType
                                                             : kPremul_SkAlphaType;
 
     return SkImage::MakeFromCompressedTexture(context,
@@ -75,7 +77,7 @@ static void check_compressed_mipmaps(GrContext* context, sk_sp<SkImage> img,
 
     int numMipLevels = 1;
     if (mipMapped == GrMipMapped::kYes) {
-        numMipLevels = SkMipMap::ComputeLevelCount(32, 32)+1;
+        numMipLevels = SkMipmap::ComputeLevelCount(32, 32)+1;
     }
 
     for (int i = 0, rectSize = 32; i < numMipLevels; ++i, rectSize /= 2) {
@@ -109,6 +111,13 @@ static void check_readback(GrContext* context, sk_sp<SkImage> img,
                            SkImage::CompressionType compressionType,
                            const SkColor4f& expectedColor,
                            skiatest::Reporter* reporter, const char* label) {
+#ifdef SK_BUILD_FOR_IOS
+    // reading back ETC2 is broken on Metal/iOS (skbug.com/9839)
+    if (context->backend() == GrBackendApi::kMetal) {
+      return;
+    }
+#endif
+
     SkAutoPixmapStorage actual;
 
     SkImageInfo readBackII = SkImageInfo::Make(img->width(), img->height(),
@@ -136,7 +145,6 @@ static void test_compressed_color_init(GrContext* context,
                                        GrMipMapped mipMapped) {
     GrBackendTexture backendTex = create(context, color, mipMapped);
     if (!backendTex.isValid()) {
-        // errors here should be reported by the test_wrapping test
         return;
     }
 
@@ -163,12 +171,13 @@ static std::unique_ptr<const char[]> make_compressed_data(SkImage::CompressionTy
 
     int numMipLevels = 1;
     if (mipMapped == GrMipMapped::kYes) {
-        numMipLevels = SkMipMap::ComputeLevelCount(dimensions.width(), dimensions.height()) + 1;
+        numMipLevels = SkMipmap::ComputeLevelCount(dimensions.width(), dimensions.height()) + 1;
     }
 
     SkTArray<size_t> mipMapOffsets(numMipLevels);
 
-    size_t dataSize = GrCompressedDataSize(compression, dimensions, &mipMapOffsets, mipMapped);
+    size_t dataSize = SkCompressedDataSize(compression, dimensions, &mipMapOffsets,
+                                           mipMapped == GrMipMapped::kYes);
     char* data = new char[dataSize];
 
     for (int level = 0; level < numMipLevels; ++level) {
@@ -177,7 +186,7 @@ static std::unique_ptr<const char[]> make_compressed_data(SkImage::CompressionTy
         GrFillInCompressedData(compression, dimensions,
                                GrMipMapped::kNo, &data[mipMapOffsets[level]], levelColors[level]);
 
-        dimensions = {SkTMax(1, dimensions.width() /2), SkTMax(1, dimensions.height()/2)};
+        dimensions = {std::max(1, dimensions.width() /2), std::max(1, dimensions.height()/2)};
     }
 
     return std::unique_ptr<const char[]>(data);
@@ -205,7 +214,8 @@ static void test_compressed_data_init(GrContext* context,
 
     std::unique_ptr<const char[]> data(make_compressed_data(compression, expectedColors,
                                                             mipMapped));
-    size_t dataSize = GrCompressedDataSize(compression, { 32, 32 }, nullptr, mipMapped);
+    size_t dataSize = SkCompressedDataSize(compression, { 32, 32 }, nullptr,
+                                           mipMapped == GrMipMapped::kYes);
 
     GrBackendTexture backendTex = create(context, data.get(), dataSize, mipMapped);
     if (!backendTex.isValid()) {
@@ -226,7 +236,7 @@ static void test_compressed_data_init(GrContext* context,
 }
 
 DEF_GPUTEST_FOR_RENDERING_CONTEXTS(CompressedBackendAllocationTest, reporter, ctxInfo) {
-    GrContext* context = ctxInfo.grContext();
+    auto context = ctxInfo.directContext();
     const GrCaps* caps = context->priv().caps();
 
     struct {

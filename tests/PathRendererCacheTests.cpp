@@ -9,14 +9,14 @@
 
 #include "include/core/SkPath.h"
 #include "include/gpu/GrContext.h"
-#include "src/gpu/GrClip.h"
 #include "src/gpu/GrContextPriv.h"
+#include "src/gpu/GrRenderTargetContext.h"
 #include "src/gpu/GrResourceCache.h"
 #include "src/gpu/GrSoftwarePathRenderer.h"
 #include "src/gpu/GrStyle.h"
 #include "src/gpu/effects/GrPorterDuffXferProcessor.h"
-#include "src/gpu/geometry/GrShape.h"
-#include "src/gpu/ops/GrTessellatingPathRenderer.h"
+#include "src/gpu/geometry/GrStyledShape.h"
+#include "src/gpu/ops/GrTriangulatingPathRenderer.h"
 
 static SkPath create_concave_path() {
     SkPath path;
@@ -33,23 +33,24 @@ static void draw_path(GrContext* ctx,
                       const SkPath& path,
                       GrPathRenderer* pr,
                       GrAAType aaType,
-                      const GrStyle& style) {
+                      const GrStyle& style,
+                      float scaleX = 1.f) {
     GrPaint paint;
     paint.setXPFactory(GrPorterDuffXPFactory::Get(SkBlendMode::kSrc));
 
-    GrNoClip noClip;
     SkIRect clipConservativeBounds = SkIRect::MakeWH(renderTargetContext->width(),
                                                      renderTargetContext->height());
-    GrShape shape(path, style);
+    GrStyledShape shape(path, style);
     if (shape.style().applies()) {
         shape = shape.applyStyle(GrStyle::Apply::kPathEffectAndStrokeRec, 1.0f);
     }
     SkMatrix matrix = SkMatrix::I();
+    matrix.setScaleX(scaleX);
     GrPathRenderer::DrawPathArgs args{ctx,
                                       std::move(paint),
                                       &GrUserStencilSettings::kUnused,
                                       renderTargetContext,
-                                      &noClip,
+                                      nullptr,
                                       &clipConservativeBounds,
                                       &matrix,
                                       &shape,
@@ -72,9 +73,10 @@ static void test_path(skiatest::Reporter* reporter,
                       std::function<SkPath(void)> createPath,
                       std::function<GrPathRenderer*(GrContext*)> createPathRenderer,
                       int expected,
+                      bool checkListeners,
                       GrAAType aaType = GrAAType::kNone,
                       GrStyle style = GrStyle(SkStrokeRec::kFill_InitStyle)) {
-    sk_sp<GrContext> ctx = GrContext::MakeMock(nullptr);
+    sk_sp<GrDirectContext> ctx = GrDirectContext::MakeMock(nullptr);
     // The cache needs to be big enough that nothing gets flushed, or our expectations can be wrong
     ctx->setResourceCacheLimit(8000000);
     GrResourceCache* cache = ctx->priv().getResourceCache();
@@ -94,7 +96,7 @@ static void test_path(skiatest::Reporter* reporter,
 
     // Draw the path, check that new resource count matches expectations
     draw_path(ctx.get(), rtc.get(), path, pathRenderer.get(), aaType, style);
-    ctx->flush();
+    ctx->flushAndSubmit();
     REPORTER_ASSERT(reporter, cache_non_scratch_resources_equals(cache, expected));
 
     // Nothing should be purgeable yet
@@ -106,19 +108,37 @@ static void test_path(skiatest::Reporter* reporter,
     path.reset();
     cache->purgeAsNeeded();
     REPORTER_ASSERT(reporter, cache_non_scratch_resources_equals(cache, expected - 1));
+
+    if (!checkListeners) {
+        return;
+    }
+
+    // Test that purging the cache of masks also removes listeners from the path.
+    path = createPath();
+    REPORTER_ASSERT(reporter, SkPathPriv::GenIDChangeListenersCount(path) == 0);
+    for (int i = 0; i < 20; ++i) {
+        float scaleX = 1 + ((float)i + 1)/20.f;
+        draw_path(ctx.get(), rtc.get(), path, pathRenderer.get(), aaType, style, scaleX);
+    }
+    ctx->flushAndSubmit();
+    REPORTER_ASSERT(reporter, SkPathPriv::GenIDChangeListenersCount(path) == 20);
+    cache->purgeAllUnlocked();
+    // The listeners don't actually purge until we try to add another one.
+    draw_path(ctx.get(), rtc.get(), path, pathRenderer.get(), aaType, style);
+    REPORTER_ASSERT(reporter, SkPathPriv::GenIDChangeListenersCount(path) == 1);
 }
 
 // Test that deleting the original path invalidates the VBs cached by the tessellating path renderer
-DEF_GPUTEST(TessellatingPathRendererCacheTest, reporter, /* options */) {
+DEF_GPUTEST(TriangulatingPathRendererCacheTest, reporter, /* options */) {
     auto createPR = [](GrContext*) {
-        return new GrTessellatingPathRenderer();
+        return new GrTriangulatingPathRenderer();
     };
 
-    // Tessellating path renderer creates a single vertex buffer for non-AA paths. No other
+    // Triangulating path renderer creates a single vertex buffer for non-AA paths. No other
     // resources should be created.
     const int kExpectedResources = 1;
 
-    test_path(reporter, create_concave_path, createPR, kExpectedResources);
+    test_path(reporter, create_concave_path, createPR, kExpectedResources, false);
 
     // Test with a style that alters the path geometry. This needs to attach the invalidation logic
     // to the original path, not the modified path produced by the style.
@@ -126,8 +146,8 @@ DEF_GPUTEST(TessellatingPathRendererCacheTest, reporter, /* options */) {
     paint.setStyle(SkPaint::kStroke_Style);
     paint.setStrokeWidth(1);
     GrStyle style(paint);
-    test_path(
-            reporter, create_concave_path, createPR, kExpectedResources, GrAAType::kNone, style);
+    test_path(reporter, create_concave_path, createPR, kExpectedResources, false, GrAAType::kNone,
+              style);
 }
 
 // Test that deleting the original path invalidates the textures cached by the SW path renderer
@@ -140,7 +160,8 @@ DEF_GPUTEST(SoftwarePathRendererCacheTest, reporter, /* options */) {
     // only contains a single quad so GrFillRectOp doesn't need to use the shared index buffer.
     const int kExpectedResources = 1;
 
-    test_path(reporter, create_concave_path, createPR, kExpectedResources, GrAAType::kCoverage);
+    test_path(reporter, create_concave_path, createPR, kExpectedResources, true,
+              GrAAType::kCoverage);
 
     // Test with a style that alters the path geometry. This needs to attach the invalidation logic
     // to the original path, not the modified path produced by the style.
@@ -148,6 +169,6 @@ DEF_GPUTEST(SoftwarePathRendererCacheTest, reporter, /* options */) {
     paint.setStyle(SkPaint::kStroke_Style);
     paint.setStrokeWidth(1);
     GrStyle style(paint);
-    test_path(reporter, create_concave_path, createPR, kExpectedResources, GrAAType::kCoverage,
-              style);
+    test_path(reporter, create_concave_path, createPR, kExpectedResources, true,
+              GrAAType::kCoverage, style);
 }

@@ -154,6 +154,7 @@ DEF_TEST(Skottie_Properties, reporter) {
         void onColorProperty(const char node_name[],
                 const PropertyObserver::LazyHandle<ColorPropertyHandle>& lh) override {
             fColors.push_back({SkString(node_name), lh()});
+            fColorsWithFullKeypath.push_back({SkString(fCurrentNode.c_str()), lh()});
         }
 
         void onOpacityProperty(const char node_name[],
@@ -171,16 +172,33 @@ DEF_TEST(Skottie_Properties, reporter) {
             fTransforms.push_back({SkString(node_name), lh()});
         }
 
+        void onEnterNode(const char node_name[]) override {
+            fCurrentNode = fCurrentNode.empty() ? node_name : fCurrentNode + "." + node_name;
+        }
+
+        void onLeavingNode(const char node_name[]) override {
+            auto length = strlen(node_name);
+            fCurrentNode =
+                    fCurrentNode.length() > length
+                            ? fCurrentNode.substr(0, fCurrentNode.length() - strlen(node_name) - 1)
+                            : "";
+        }
+
         const std::vector<ColorInfo>& colors() const { return fColors; }
         const std::vector<OpacityInfo>& opacities() const { return fOpacities; }
         const std::vector<TextInfo>& texts() const { return fTexts; }
         const std::vector<TransformInfo>& transforms() const { return fTransforms; }
+        const std::vector<ColorInfo>& colorsWithFullKeypath() const {
+            return fColorsWithFullKeypath;
+        }
 
     private:
         std::vector<ColorInfo>     fColors;
         std::vector<OpacityInfo>   fOpacities;
         std::vector<TextInfo>      fTexts;
         std::vector<TransformInfo> fTransforms;
+        std::string                fCurrentNode;
+        std::vector<ColorInfo>     fColorsWithFullKeypath;
     };
 
     // Returns a single specified typeface for all requests.
@@ -246,6 +264,13 @@ DEF_TEST(Skottie_Properties, reporter) {
     REPORTER_ASSERT(reporter, colors[1].node_name.equals("fill_effect_0"));
     REPORTER_ASSERT(reporter, colors[1].handle->get() == 0xff00ff00);
 
+    const auto& colorsWithFullKeypath = observer->colorsWithFullKeypath();
+    REPORTER_ASSERT(reporter, colorsWithFullKeypath.size() == 2);
+    REPORTER_ASSERT(reporter, colorsWithFullKeypath[0].node_name.equals("layer_0.fill_0"));
+    REPORTER_ASSERT(reporter, colorsWithFullKeypath[0].handle->get() == 0xffff0000);
+    REPORTER_ASSERT(reporter, colorsWithFullKeypath[1].node_name.equals("layer_0.fill_effect_0"));
+    REPORTER_ASSERT(reporter, colorsWithFullKeypath[1].handle->get() == 0xff00ff00);
+
     const auto& opacities = observer->opacities();
     REPORTER_ASSERT(reporter, opacities.size() == 3);
     REPORTER_ASSERT(reporter, opacities[0].node_name.equals("shape_transform_0"));
@@ -295,9 +320,11 @@ DEF_TEST(Skottie_Properties, reporter) {
       0,
       SkTextUtils::kLeft_Align,
       Shaper::VAlign::kTopBaseline,
+      Shaper::ResizePolicy::kNone,
       SkRect::MakeEmpty(),
       SK_ColorTRANSPARENT,
       SK_ColorTRANSPARENT,
+      TextPaintOrder::kFillStroke,
       false,
       false
     }));
@@ -440,6 +467,7 @@ DEF_TEST(Skottie_Shaper_HAlign, reporter) {
                 0,
                 talign.align,
                 skottie::Shaper::VAlign::kTopBaseline,
+                skottie::Shaper::ResizePolicy::kNone,
                 Shaper::Flags::kNone
             };
 
@@ -505,6 +533,7 @@ DEF_TEST(Skottie_Shaper_VAlign, reporter) {
                 0,
                 SkTextUtils::Align::kCenter_Align,
                 talign.align,
+                skottie::Shaper::ResizePolicy::kNone,
                 Shaper::Flags::kNone
             };
 
@@ -541,6 +570,7 @@ DEF_TEST(Skottie_Shaper_FragmentGlyphs, reporter) {
          0,
         SkTextUtils::Align::kCenter_Align,
         Shaper::VAlign::kTop,
+        skottie::Shaper::ResizePolicy::kNone,
         Shaper::Flags::kNone
     };
 
@@ -635,6 +665,7 @@ DEF_TEST(Skottie_Shaper_ExplicitFontMgr, reporter) {
          0,
         SkTextUtils::Align::kCenter_Align,
         Shaper::VAlign::kTop,
+        Shaper::ResizePolicy::kNone,
         Shaper::Flags::kNone
     };
 

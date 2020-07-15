@@ -22,6 +22,7 @@ bool TextPropertyValue::operator==(const TextPropertyValue& other) const {
         && fLineHeight == other.fLineHeight
         && fHAlign == other.fHAlign
         && fVAlign == other.fVAlign
+        && fResize == other.fResize
         && fBox == other.fBox
         && fFillColor == other.fFillColor
         && fStrokeColor == other.fStrokeColor
@@ -123,4 +124,8 @@ void PropertyObserver::onTextProperty(const char[],
 void PropertyObserver::onTransformProperty(const char[],
                                            const LazyHandle<TransformPropertyHandle>&) {}
 
-} // namespace skottie
+void PropertyObserver::onEnterNode(const char node_name[]) {}
+
+void PropertyObserver::onLeavingNode(const char node_name[]) {}
+
+}  // namespace skottie

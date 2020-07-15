@@ -5,6 +5,18 @@
 namespace skia {
 namespace textlayout {
 
+namespace {
+    SkScalar relax(SkScalar a) {
+        // This rounding is done to match Flutter tests. Must be removed..
+        if (SkScalarIsFinite(a)) {
+          auto threshold = SkIntToScalar(1 << 12);
+          return SkScalarRoundToScalar(a * threshold)/threshold;
+        } else {
+          return a;
+        }
+    }
+}
+
 class ParagraphCacheKey {
 public:
     ParagraphCacheKey(const ParagraphImpl* paragraph)
@@ -23,21 +35,25 @@ class ParagraphCacheValue {
 public:
     ParagraphCacheValue(const ParagraphImpl* paragraph)
         : fKey(ParagraphCacheKey(paragraph))
-        , fInternalState(paragraph->fState)
         , fRuns(paragraph->fRuns)
-        , fClusters(paragraph->fClusters)
-        , fUnresolvedGlyphs(paragraph->fUnresolvedGlyphs){ }
+        , fCodeUnitProperties(paragraph->fCodeUnitProperties)
+        , fWords(paragraph->fWords)
+        , fBidiRegions(paragraph->fBidiRegions)
+        , fUTF8IndexForUTF16Index(paragraph->fUTF8IndexForUTF16Index)
+        , fUTF16IndexForUTF8Index(paragraph->fUTF16IndexForUTF8Index) { }
 
     // Input == key
     ParagraphCacheKey fKey;
 
-    // Shaped results:
-    InternalState fInternalState;
+    // Shaped results
     SkTArray<Run, false> fRuns;
-    SkTArray<Cluster, true> fClusters;
-    size_t fUnresolvedGlyphs;
+    // ICU results
+    SkTArray<CodeUnitFlags> fCodeUnitProperties;
+    std::vector<size_t> fWords;
+    SkTArray<BidiRegion> fBidiRegions;
+    SkTArray<TextIndex, true> fUTF8IndexForUTF16Index;
+    SkTArray<size_t, true> fUTF16IndexForUTF8Index;
 };
-
 
 uint32_t ParagraphCache::KeyHash::mix(uint32_t hash, uint32_t data) const {
     hash += data;
@@ -45,32 +61,60 @@ uint32_t ParagraphCache::KeyHash::mix(uint32_t hash, uint32_t data) const {
     hash ^= (hash >> 6);
     return hash;
 }
+
 uint32_t ParagraphCache::KeyHash::operator()(const ParagraphCacheKey& key) const {
     uint32_t hash = 0;
     for (auto& ph : key.fPlaceholders) {
+        if (ph.fRange.width() == 0) {
+            continue;
+        }
         hash = mix(hash, SkGoodHash()(ph.fRange.start));
         hash = mix(hash, SkGoodHash()(ph.fRange.end));
-        hash = mix(hash, SkGoodHash()(ph.fStyle.fBaselineOffset));
-        hash = mix(hash, SkGoodHash()(ph.fStyle.fBaseline));
+        hash = mix(hash, SkGoodHash()(relax(ph.fStyle.fHeight)));
+        hash = mix(hash, SkGoodHash()(relax(ph.fStyle.fWidth)));
         hash = mix(hash, SkGoodHash()(ph.fStyle.fAlignment));
-        hash = mix(hash, SkGoodHash()(ph.fStyle.fHeight));
-        hash = mix(hash, SkGoodHash()(ph.fStyle.fWidth));
+        hash = mix(hash, SkGoodHash()(ph.fStyle.fBaseline));
+        if (ph.fStyle.fAlignment == PlaceholderAlignment::kBaseline) {
+            hash = mix(hash, SkGoodHash()(relax(ph.fStyle.fBaselineOffset)));
+        }
     }
+
     for (auto& ts : key.fTextStyles) {
         if (ts.fStyle.isPlaceholder()) {
             continue;
         }
-        hash = mix(hash, SkGoodHash()(ts.fStyle.getLetterSpacing()));
-        hash = mix(hash, SkGoodHash()(ts.fStyle.getWordSpacing()));
-        hash = mix(hash, SkGoodHash()(ts.fRange));
+        hash = mix(hash, SkGoodHash()(relax(ts.fStyle.getLetterSpacing())));
+        hash = mix(hash, SkGoodHash()(relax(ts.fStyle.getWordSpacing())));
+        hash = mix(hash, SkGoodHash()(ts.fStyle.getLocale()));
+        hash = mix(hash, SkGoodHash()(relax(ts.fStyle.getHeight())));
         for (auto& ff : ts.fStyle.getFontFamilies()) {
             hash = mix(hash, SkGoodHash()(ff));
         }
+        for (auto& ff : ts.fStyle.getFontFeatures()) {
+            hash = mix(hash, SkGoodHash()(ff.fValue));
+            hash = mix(hash, SkGoodHash()(ff.fName));
+        }
         hash = mix(hash, SkGoodHash()(ts.fStyle.getFontStyle()));
-        hash = mix(hash, SkGoodHash()(ts.fStyle.getFontSize()));
-        hash = mix(hash, SkGoodHash()(ts.fRange.start));
-        hash = mix(hash, SkGoodHash()(ts.fRange.end));
+        hash = mix(hash, SkGoodHash()(relax(ts.fStyle.getFontSize())));
+        hash = mix(hash, SkGoodHash()(ts.fRange));
     }
+
+    hash = mix(hash, SkGoodHash()(relax(key.fParagraphStyle.getHeight())));
+    hash = mix(hash, SkGoodHash()(key.fParagraphStyle.getTextDirection()));
+
+    auto& strutStyle = key.fParagraphStyle.getStrutStyle();
+    if (strutStyle.getStrutEnabled()) {
+        hash = mix(hash, SkGoodHash()(relax(strutStyle.getHeight())));
+        hash = mix(hash, SkGoodHash()(relax(strutStyle.getLeading())));
+        hash = mix(hash, SkGoodHash()(relax(strutStyle.getFontSize())));
+        hash = mix(hash, SkGoodHash()(strutStyle.getHeightOverride()));
+        hash = mix(hash, SkGoodHash()(strutStyle.getFontStyle()));
+        hash = mix(hash, SkGoodHash()(strutStyle.getForceStrutHeight()));
+        for (auto& ff : strutStyle.getFontFamilies()) {
+            hash = mix(hash, SkGoodHash()(ff));
+        }
+    }
+
     hash = mix(hash, SkGoodHash()(key.fText));
     return hash;
 }
@@ -89,8 +133,15 @@ bool operator==(const ParagraphCacheKey& a, const ParagraphCacheKey& b) {
         return false;
     }
 
-    if (!(a.fParagraphStyle == b.fParagraphStyle)) {
-        // This is too strong, but at least we will not lose lines
+    // There is no need to compare default paragraph styles - they are included into fTextStyles
+    if (!nearlyEqual(a.fParagraphStyle.getHeight(), b.fParagraphStyle.getHeight())) {
+        return false;
+    }
+    if (a.fParagraphStyle.getTextDirection() != b.fParagraphStyle.getTextDirection()) {
+        return false;
+    }
+
+    if (!(a.fParagraphStyle.getStrutStyle() == b.fParagraphStyle.getStrutStyle())) {
         return false;
     }
 
@@ -113,6 +164,9 @@ bool operator==(const ParagraphCacheKey& a, const ParagraphCacheKey& b) {
     for (size_t i = 0; i < a.fPlaceholders.size(); ++i) {
         auto& tsa = a.fPlaceholders[i];
         auto& tsb = b.fPlaceholders[i];
+        if (tsa.fRange.width() == 0 && tsb.fRange.width() == 0) {
+            continue;
+        }
         if (!(tsa.fStyle.equals(tsb.fStyle))) {
             return false;
         }
@@ -130,7 +184,7 @@ bool operator==(const ParagraphCacheKey& a, const ParagraphCacheKey& b) {
 struct ParagraphCache::Entry {
 
     Entry(ParagraphCacheValue* value) : fValue(value) {}
-    ParagraphCacheValue* fValue;
+    std::unique_ptr<ParagraphCacheValue> fValue;
 };
 
 ParagraphCache::ParagraphCache()
@@ -146,32 +200,18 @@ ParagraphCache::ParagraphCache()
 
 ParagraphCache::~ParagraphCache() { }
 
-void ParagraphCache::updateFrom(const ParagraphImpl* paragraph, Entry* entry) {
-
-    entry->fValue->fInternalState = paragraph->state();
-    for (size_t i = 0; i < paragraph->fRuns.size(); ++i) {
-        auto& run = paragraph->fRuns[i];
-        if (run.fSpaced) {
-            entry->fValue->fRuns[i] = run;
-        }
-    }
-}
-
 void ParagraphCache::updateTo(ParagraphImpl* paragraph, const Entry* entry) {
+
     paragraph->fRuns.reset();
     paragraph->fRuns = entry->fValue->fRuns;
+    paragraph->fCodeUnitProperties = entry->fValue->fCodeUnitProperties;
+    paragraph->fWords = entry->fValue->fWords;
+    paragraph->fBidiRegions = entry->fValue->fBidiRegions;
+    paragraph->fUTF8IndexForUTF16Index = entry->fValue->fUTF8IndexForUTF16Index;
+    paragraph->fUTF16IndexForUTF8Index = entry->fValue->fUTF16IndexForUTF8Index;
     for (auto& run : paragraph->fRuns) {
         run.setMaster(paragraph);
     }
-
-    paragraph->fClusters.reset();
-    paragraph->fClusters = entry->fValue->fClusters;
-    for (auto& cluster : paragraph->fClusters) {
-        cluster.setMaster(paragraph);
-    }
-
-    paragraph->fState = entry->fValue->fInternalState;
-    paragraph->fUnresolvedGlyphs = entry->fValue->fUnresolvedGlyphs;
 }
 
 void ParagraphCache::printStatistics() {
@@ -186,7 +226,7 @@ void ParagraphCache::printStatistics() {
 
 void ParagraphCache::abandon() {
     SkAutoMutexExclusive lock(fParagraphMutex);
-    fLRUCacheMap.foreach([](std::unique_ptr<Entry>* e) {
+    fLRUCacheMap.foreach([](ParagraphCacheKey*, std::unique_ptr<Entry>* e) {
     });
 
     this->reset();
@@ -212,6 +252,7 @@ bool ParagraphCache::findParagraph(ParagraphImpl* paragraph) {
     SkAutoMutexExclusive lock(fParagraphMutex);
     ParagraphCacheKey key(paragraph);
     std::unique_ptr<Entry>* entry = fLRUCacheMap.find(key);
+
     if (!entry) {
         // We have a cache miss
 #ifdef PARAGRAPH_CACHE_STATS
@@ -241,8 +282,7 @@ bool ParagraphCache::updateParagraph(ParagraphImpl* paragraph) {
         fChecker(paragraph, "addedParagraph", true);
         return true;
     } else {
-        updateFrom(paragraph, entry->get());
-        fChecker(paragraph, "updatedParagraph", true);
+        // We do not have to update the paragraph
         return false;
     }
 }

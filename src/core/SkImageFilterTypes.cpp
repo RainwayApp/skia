@@ -5,6 +5,7 @@
  * found in the LICENSE file.
  */
 
+#include "include/core/SkMatrix.h"
 #include "src/core/SkImageFilterTypes.h"
 #include "src/core/SkImageFilter_Base.h"
 
@@ -36,7 +37,7 @@ Mapping Mapping::Make(const SkMatrix& ctm, const SkImageFilter* filter) {
         // TODO (michaelludwig) - Should maybe strip out any fractional part of the translation in
         // 'ctm' so that can be incorporated during regular drawing, instead of by resampling the
         // filtered image.
-        layer = SkMatrix::MakeScale(scale.fWidth, scale.fHeight);
+        layer = SkMatrix::Scale(scale.fWidth, scale.fHeight);
     } else {
         // Perspective
         // TODO (michaelludwig) - Should investigate choosing a scale factor for the layer matrix

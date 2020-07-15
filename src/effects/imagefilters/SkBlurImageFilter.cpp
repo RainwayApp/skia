@@ -555,8 +555,8 @@ static sk_sp<SkSpecialImage> cpu_blur(
 static SkVector map_sigma(const SkSize& localSigma, const SkMatrix& ctm) {
     SkVector sigma = SkVector::Make(localSigma.width(), localSigma.height());
     ctm.mapVectors(&sigma, 1);
-    sigma.fX = SkMinScalar(SkScalarAbs(sigma.fX), MAX_SIGMA);
-    sigma.fY = SkMinScalar(SkScalarAbs(sigma.fY), MAX_SIGMA);
+    sigma.fX = std::min(SkScalarAbs(sigma.fX), MAX_SIGMA);
+    sigma.fY = std::min(SkScalarAbs(sigma.fY), MAX_SIGMA);
     return sigma;
 }
 
@@ -643,18 +643,20 @@ sk_sp<SkSpecialImage> SkBlurImageFilterImpl::gpuFilter(
 
     auto context = ctx.getContext();
 
-    sk_sp<GrTextureProxy> inputTexture(input->asTextureProxyRef(context));
-    if (!inputTexture) {
+    GrSurfaceProxyView inputView = input->view(context);
+    if (!inputView.proxy()) {
         return nullptr;
     }
+    SkASSERT(inputView.asTextureProxy());
 
     // TODO (michaelludwig) - The color space choice is odd, should it just be ctx.refColorSpace()?
+    dstBounds.offset(input->subset().topLeft());
+    inputBounds.offset(input->subset().topLeft());
     auto renderTargetContext = SkGpuBlurUtils::GaussianBlur(
             context,
-            std::move(inputTexture),
+            std::move(inputView),
             SkColorTypeToGrColorType(input->colorType()),
             input->alphaType(),
-            input->subset().topLeft(),
             ctx.colorSpace() ? sk_ref_sp(input->getColorSpace()) : nullptr,
             dstBounds,
             inputBounds,
@@ -665,14 +667,13 @@ sk_sp<SkSpecialImage> SkBlurImageFilterImpl::gpuFilter(
         return nullptr;
     }
 
-    return SkSpecialImage::MakeDeferredFromGpu(
-            context,
-            SkIRect::MakeWH(dstBounds.width(), dstBounds.height()),
-            kNeedNewImageUniqueID_SpecialImage,
-            renderTargetContext->asTextureProxyRef(),
-            renderTargetContext->colorInfo().colorType(),
-            sk_ref_sp(input->getColorSpace()),
-            ctx.surfaceProps());
+    return SkSpecialImage::MakeDeferredFromGpu(context,
+                                               SkIRect::MakeSize(dstBounds.size()),
+                                               kNeedNewImageUniqueID_SpecialImage,
+                                               renderTargetContext->readSurfaceView(),
+                                               renderTargetContext->colorInfo().colorType(),
+                                               sk_ref_sp(input->getColorSpace()),
+                                               ctx.surfaceProps());
 }
 #endif
 

@@ -76,7 +76,7 @@ sk_sp<const GrGLInterface> GrGLMakeAssembledGLESInterface(void *ctx, GrGLGetProc
     interface->fStandard = kGLES_GrGLStandard;
     interface->fExtensions.swap(&extensions);
 
-    return interface;
+    return std::move(interface);
 }
 #endif
 `
@@ -143,7 +143,7 @@ sk_sp<const GrGLInterface> GrGLMakeAssembledGLInterface(void *ctx, GrGLGetProc g
     interface->fStandard = kGL_GrGLStandard;
     interface->fExtensions.swap(&extensions);
 
-    return interface;
+    return std::move(interface);
 }
 #endif
 `
@@ -208,7 +208,7 @@ sk_sp<const GrGLInterface> GrGLMakeAssembledWebGLInterface(void *ctx, GrGLGetPro
     interface->fStandard = kWebGL_GrGLStandard;
     interface->fExtensions.swap(&extensions);
 
-    return interface;
+    return std::move(interface);
 }
 #endif
 `
@@ -233,6 +233,54 @@ const VALIDATE_INTERFACE = `/*
 GrGLInterface::GrGLInterface() {
     fStandard = kNone_GrGLStandard;
 }
+
+#if GR_GL_CHECK_ERROR
+static const char* get_error_string(GrGLenum err) {
+    switch (err) {
+        case GR_GL_NO_ERROR:
+            return "";
+        case GR_GL_INVALID_ENUM:
+            return "Invalid Enum";
+        case GR_GL_INVALID_VALUE:
+            return "Invalid Value";
+        case GR_GL_INVALID_OPERATION:
+            return "Invalid Operation";
+        case GR_GL_OUT_OF_MEMORY:
+            return "Out of Memory";
+        case GR_GL_CONTEXT_LOST:
+            return "Context Lost";
+    }
+    return "Unknown";
+}
+
+GrGLenum GrGLInterface::checkError(const char* location, const char* call) const {
+    GrGLenum error = fFunctions.fGetError();
+    if (error != GR_GL_NO_ERROR && !fSuppressErrorLogging) {
+        SkDebugf("---- glGetError 0x%x(%s)", error, get_error_string(error));
+        if (location) {
+            SkDebugf(" at\n\t%s", location);
+        }
+        if (call) {
+            SkDebugf("\n\t\t%s", call);
+        }
+        SkDebugf("\n");
+        if (error == GR_GL_OUT_OF_MEMORY) {
+            fOOMed = true;
+        }
+    }
+    return error;
+}
+
+bool GrGLInterface::checkAndResetOOMed() const {
+    if (fOOMed) {
+        fOOMed = false;
+        return true;
+    }
+    return false;
+}
+
+void GrGLInterface::suppressErrorLogging() { fSuppressErrorLogging = true; }
+#endif
 
 #define RETURN_FALSE_INTERFACE                                                 \
     SkDEBUGF("%s:%d GrGLInterface::validate() failed.\n", __FILE__, __LINE__); \

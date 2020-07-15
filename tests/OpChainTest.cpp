@@ -10,6 +10,7 @@
 #include "src/gpu/GrMemoryPool.h"
 #include "src/gpu/GrOpFlushState.h"
 #include "src/gpu/GrOpsTask.h"
+#include "src/gpu/GrProxyProvider.h"
 #include "src/gpu/ops/GrOp.h"
 #include "tests/Test.h"
 
@@ -122,6 +123,11 @@ private:
                         HasAABloat::kNo, IsHairline::kNo);
     }
 
+    void onPrePrepare(GrRecordingContext*,
+                      const GrSurfaceProxyView* writeView,
+                      GrAppliedClip*,
+                      const GrXferProcessor::DstProxyView&) override {}
+
     void onPrepare(GrOpFlushState*) override {}
 
     void onExecute(GrOpFlushState*, const SkRect& chainBounds) override {
@@ -164,12 +170,9 @@ private:
  * painter's order.
  */
 DEF_GPUTEST(OpChainTest, reporter, /*ctxInfo*/) {
-    auto context = GrContext::MakeMock(nullptr);
+    sk_sp<GrDirectContext> context = GrDirectContext::MakeMock(nullptr);
     SkASSERT(context);
-    GrSurfaceDesc desc;
-    desc.fConfig = kRGBA_8888_GrPixelConfig;
-    desc.fWidth = kNumOps + 1;
-    desc.fHeight = 1;
+    static constexpr SkISize kDims = {kNumOps + 1, 1};
 
     const GrBackendFormat format =
         context->priv().caps()->getDefaultBackendFormat(GrColorType::kRGBA_8888,
@@ -177,13 +180,12 @@ DEF_GPUTEST(OpChainTest, reporter, /*ctxInfo*/) {
 
     static const GrSurfaceOrigin kOrigin = kTopLeft_GrSurfaceOrigin;
     auto proxy = context->priv().proxyProvider()->createProxy(
-            format, desc, GrRenderable::kYes, 1, kOrigin, GrMipMapped::kNo,
-            SkBackingFit::kExact, SkBudgeted::kNo, GrProtected::kNo, GrInternalSurfaceFlags::kNone);
+            format, kDims, GrRenderable::kYes, 1, GrMipMapped::kNo, SkBackingFit::kExact,
+            SkBudgeted::kNo, GrProtected::kNo, GrInternalSurfaceFlags::kNone);
     SkASSERT(proxy);
     proxy->instantiate(context->priv().resourceProvider());
 
-    GrSwizzle outSwizzle = context->priv().caps()->getOutputSwizzle(format,
-                                                                    GrColorType::kRGBA_8888);
+    GrSwizzle writeSwizzle = context->priv().caps()->getWriteSwizzle(format, GrColorType::kRGBA_8888);
 
     int result[result_width()];
     int validResult[result_width()];
@@ -200,6 +202,7 @@ DEF_GPUTEST(OpChainTest, reporter, /*ctxInfo*/) {
     SkRandom random;
     bool repeat = false;
     Combinable combinable;
+    GrDrawingManager* drawingMgr = context->priv().drawingManager();
     for (int p = 0; p < kNumPermutations; ++p) {
         for (int i = 0; i < kNumOps - 2 && !repeat; ++i) {
             // The current implementation of nextULessThan() is biased. :(
@@ -214,8 +217,9 @@ DEF_GPUTEST(OpChainTest, reporter, /*ctxInfo*/) {
                 GrOpFlushState flushState(context->priv().getGpu(),
                                           context->priv().resourceProvider(),
                                           &tracker);
-                GrOpsTask opsTask(context->priv().arenas(),
-                                  GrSurfaceProxyView(proxy, kOrigin, outSwizzle),
+                GrOpsTask opsTask(drawingMgr,
+                                  context->priv().arenas(),
+                                  GrSurfaceProxyView(proxy, kOrigin, writeSwizzle),
                                   context->priv().auditTrail());
                 // This assumes the particular values of kRanges.
                 std::fill_n(result, result_width(), -1);
@@ -230,14 +234,15 @@ DEF_GPUTEST(OpChainTest, reporter, /*ctxInfo*/) {
                     range.fOffset += pos;
                     auto op = TestOp::Make(context.get(), value, range, result, &combinable);
                     op->writeResult(validResult);
-                    opsTask.addOp(std::move(op),
+                    opsTask.addOp(drawingMgr, std::move(op),
                                   GrTextureResolveManager(context->priv().drawingManager()),
                                   *context->priv().caps());
                 }
                 opsTask.makeClosed(*context->priv().caps());
                 opsTask.prepare(&flushState);
                 opsTask.execute(&flushState);
-                opsTask.endFlush();
+                opsTask.endFlush(drawingMgr);
+                opsTask.disown(drawingMgr);
 #if 0  // Useful to repeat a random configuration that fails the test while debugger attached.
                 if (!std::equal(result, result + result_width(), validResult)) {
                     repeat = true;

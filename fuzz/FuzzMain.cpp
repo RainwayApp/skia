@@ -57,7 +57,9 @@ static constexpr char g_type_message[] = "How to interpret --bytes, one of:\n"
                                          "region_set_path\n"
                                          "skdescriptor_deserialize\n"
                                          "skp\n"
+                                         "skruntimeeffect\n"
                                          "sksl2glsl\n"
+                                         "svg_dom\n"
                                          "sksl2metal\n"
                                          "sksl2pipeline\n"
                                          "sksl2spirv\n"
@@ -86,10 +88,12 @@ static void fuzz_region_deserialize(sk_sp<SkData>);
 static void fuzz_region_set_path(sk_sp<SkData>);
 static void fuzz_skdescriptor_deserialize(sk_sp<SkData>);
 static void fuzz_skp(sk_sp<SkData>);
+static void fuzz_skruntimeeffect(sk_sp<SkData>);
 static void fuzz_sksl2glsl(sk_sp<SkData>);
 static void fuzz_sksl2metal(sk_sp<SkData>);
 static void fuzz_sksl2pipeline(sk_sp<SkData>);
 static void fuzz_sksl2spirv(sk_sp<SkData>);
+static void fuzz_svg_dom(sk_sp<SkData>);
 static void fuzz_textblob_deserialize(sk_sp<SkData>);
 
 static void print_api_names();
@@ -215,6 +219,10 @@ static int fuzz_file(SkString path, SkString type) {
         fuzz_skp(bytes);
         return 0;
     }
+    if (type.equals("skruntimeeffect")) {
+        fuzz_skruntimeeffect(bytes);
+        return 0;
+    }
     if (type.equals("sksl2glsl")) {
         fuzz_sksl2glsl(bytes);
         return 0;
@@ -229,6 +237,10 @@ static int fuzz_file(SkString path, SkString type) {
     }
     if (type.equals("sksl2pipeline")) {
         fuzz_sksl2pipeline(bytes);
+        return 0;
+    }
+    if (type.equals("svg_dom")) {
+        fuzz_svg_dom(bytes);
         return 0;
     }
     if (type.equals("textblob")) {
@@ -251,6 +263,7 @@ static std::map<std::string, std::string> cf_api_map = {
     {"api_polyutils", "PolyUtils"},
     {"api_raster_n32_canvas", "RasterN32Canvas"},
     {"api_skdescriptor", "SkDescriptor"},
+    {"api_svg_canvas", "SVGCanvas"},
     {"jpeg_encoder", "JPEGEncoder"},
     {"png_encoder", "PNGEncoder"},
     {"skia_pathop_fuzzer", "LegacyChromiumPathop"},
@@ -270,6 +283,7 @@ static std::map<std::string, std::string> cf_map = {
     {"region_set_path", "region_set_path"},
     {"skdescriptor_deserialize", "skdescriptor_deserialize"},
     {"skjson", "json"},
+    {"skruntimeeffect", "skruntimeeffect"},
     {"sksl2glsl", "sksl2glsl"},
     {"sksl2metal", "sksl2metal"},
     {"sksl2spirv", "sksl2spirv"},
@@ -277,6 +291,7 @@ static std::map<std::string, std::string> cf_map = {
 #if defined(SK_ENABLE_SKOTTIE)
     {"skottie_json", "skottie_json"},
 #endif
+    {"svg_dom", "svg_dom"},
     {"textblob_deserialize", "textblob"}
 };
 
@@ -326,6 +341,12 @@ static void fuzz_skottie_json(sk_sp<SkData> bytes){
     SkDebugf("[terminated] Done animating!\n");
 }
 #endif
+
+void FuzzSVG(sk_sp<SkData> bytes);
+static void fuzz_svg_dom(sk_sp<SkData> bytes){
+    FuzzSVG(bytes);
+    SkDebugf("[terminated] Done DOM!\n");
+}
 
 // This adds up the first 1024 bytes and returns it as an 8 bit integer.  This allows afl-fuzz to
 // deterministically excercise different paths, or *options* (such as different scaling sizes or
@@ -464,6 +485,7 @@ static void fuzz_img(sk_sp<SkData> bytes, uint8_t scale, uint8_t mode) {
                     SkDebugf("Incompatible colortype conversion\n");
                     // Crash to allow afl-fuzz to know this was a bug.
                     raise(SIGSEGV);
+                    break;
                 default:
                     SkDebugf("[terminated] Couldn't getPixels.\n");
                     return;
@@ -504,12 +526,12 @@ static void fuzz_img(sk_sp<SkData> bytes, uint8_t scale, uint8_t mode) {
 
             for (int i = 0; i < numStripes; i += 2) {
                 // Skip a stripe
-                const int linesToSkip = SkTMin(stripeHeight, height - i * stripeHeight);
+                const int linesToSkip = std::min(stripeHeight, height - i * stripeHeight);
                 codec->skipScanlines(linesToSkip);
 
                 // Read a stripe
                 const int startY = (i + 1) * stripeHeight;
-                const int linesToRead = SkTMin(stripeHeight, height - startY);
+                const int linesToRead = std::min(stripeHeight, height - startY);
                 if (linesToRead > 0) {
                     codec->getScanlines(bitmap.getAddr(0, startY), linesToRead, bitmap.rowBytes());
                 }
@@ -524,11 +546,11 @@ static void fuzz_img(sk_sp<SkData> bytes, uint8_t scale, uint8_t mode) {
             for (int i = 0; i < numStripes; i += 2) {
                 // Read a stripe
                 const int startY = i * stripeHeight;
-                const int linesToRead = SkTMin(stripeHeight, height - startY);
+                const int linesToRead = std::min(stripeHeight, height - startY);
                 codec->getScanlines(bitmap.getAddr(0, startY), linesToRead, bitmap.rowBytes());
 
                 // Skip a stripe
-                const int linesToSkip = SkTMin(stripeHeight, height - (i + 1) * stripeHeight);
+                const int linesToSkip = std::min(stripeHeight, height - (i + 1) * stripeHeight);
                 if (linesToSkip > 0) {
                     codec->skipScanlines(linesToSkip);
                 }
@@ -565,15 +587,15 @@ static void fuzz_img(sk_sp<SkData> bytes, uint8_t scale, uint8_t mode) {
                 int top = 0;
                 for (int y = 0; y < H; y+= h) {
                     // Do not make the subset go off the edge of the image.
-                    const int preScaleW = SkTMin(w, W - x);
-                    const int preScaleH = SkTMin(h, H - y);
+                    const int preScaleW = std::min(w, W - x);
+                    const int preScaleH = std::min(h, H - y);
                     subset.setXYWH(x, y, preScaleW, preScaleH);
                     // And fscale
                     // FIXME: Should we have a version of getScaledDimensions that takes a subset
                     // into account?
                     decodeInfo = decodeInfo.makeWH(
-                            SkTMax(1, SkScalarRoundToInt(preScaleW * fscale)),
-                            SkTMax(1, SkScalarRoundToInt(preScaleH * fscale)));
+                            std::max(1, SkScalarRoundToInt(preScaleW * fscale)),
+                            std::max(1, SkScalarRoundToInt(preScaleH * fscale)));
                     size_t rowBytes = decodeInfo.minRowBytes();
                     if (!subsetBm.installPixels(decodeInfo, pixels, rowBytes)) {
                         SkDebugf("[terminated] Could not install pixels.\n");
@@ -594,7 +616,7 @@ static void fuzz_img(sk_sp<SkData> bytes, uint8_t scale, uint8_t mode) {
                                 return;
                             }
                             // If the first subset succeeded, a later one should not fail.
-                            // fall through to failure
+                            [[fallthrough]];
                         case SkCodec::kUnimplemented:
                             if (0 == (x|y)) {
                                 // First subset is okay to return unimplemented.
@@ -602,7 +624,7 @@ static void fuzz_img(sk_sp<SkData> bytes, uint8_t scale, uint8_t mode) {
                                 return;
                             }
                             // If the first subset succeeded, why would a later one fail?
-                            // fall through to failure
+                            [[fallthrough]];
                         default:
                             SkDebugf("[terminated] subset codec failed to decode (%d, %d, %d, %d) "
                                                   "with dimensions (%d x %d)\t error %d\n",
@@ -728,6 +750,16 @@ void FuzzImageFilterDeserialize(sk_sp<SkData> bytes);
 static void fuzz_filter_fuzz(sk_sp<SkData> bytes) {
     FuzzImageFilterDeserialize(bytes);
     SkDebugf("[terminated] filter_fuzz didn't crash!\n");
+}
+
+bool FuzzSkRuntimeEffect(sk_sp<SkData> bytes);
+
+static void fuzz_skruntimeeffect(sk_sp<SkData> bytes) {
+    if (FuzzSkRuntimeEffect(bytes)) {
+        SkDebugf("[terminated] Success! Compiled and Executed sksl code.\n");
+    } else {
+        SkDebugf("[terminated] Could not Compile or Execute sksl code.\n");
+    }
 }
 
 bool FuzzSKSL2GLSL(sk_sp<SkData> bytes);

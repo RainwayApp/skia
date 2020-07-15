@@ -15,26 +15,37 @@ public:
 
     void onColorProperty(const char node_name[],
                          const LazyHandle<skottie::ColorPropertyHandle>& c) override {
-        const auto key = fMgr->acceptKey(node_name);
-        if (!key.empty()) {
-            fMgr->fColorMap[key].push_back(c());
-        }
+        const auto markedKey = fMgr->acceptKey(node_name);
+        const auto key = markedKey.empty() ? markedKey : fMgr->fCurrentNode + ".Color";
+        fMgr->fColorMap[key].push_back(c());
     }
 
     void onOpacityProperty(const char node_name[],
                            const LazyHandle<skottie::OpacityPropertyHandle>& o) override {
-        const auto key = fMgr->acceptKey(node_name);
-        if (!key.empty()) {
-            fMgr->fOpacityMap[key].push_back(o());
-        }
+        const auto markedKey = fMgr->acceptKey(node_name);
+        const auto key = markedKey.empty() ? markedKey : fMgr->fCurrentNode + ".Opacity";
+        fMgr->fOpacityMap[key].push_back(o());
     }
 
     void onTransformProperty(const char node_name[],
                              const LazyHandle<skottie::TransformPropertyHandle>& t) override {
-        const auto key = fMgr->acceptKey(node_name);
-        if (!key.empty()) {
-            fMgr->fTransformMap[key].push_back(t());
-        }
+        const auto markedKey = fMgr->acceptKey(node_name);
+        const auto key = markedKey.empty() ? markedKey : fMgr->fCurrentNode + ".Transform";
+        fMgr->fTransformMap[key].push_back(t());
+    }
+
+    void onEnterNode(const char node_name[]) override {
+        fMgr->fCurrentNode =
+                fMgr->fCurrentNode.empty() ? node_name : fMgr->fCurrentNode + "." + node_name;
+    }
+
+    void onLeavingNode(const char node_name[]) override {
+        auto length = strlen(node_name);
+        fMgr->fCurrentNode =
+                fMgr->fCurrentNode.length() > length
+                        ? fMgr->fCurrentNode.substr(
+                                  0, fMgr->fCurrentNode.length() - strlen(node_name) - 1)
+                        : "";
     }
 
     void onTextProperty(const char node_name[],
@@ -166,6 +177,55 @@ skottie::TextPropertyValue CustomPropertyManager::getText(const PropKey& key) co
 
 bool CustomPropertyManager::setText(const PropKey& key, const skottie::TextPropertyValue& o) {
     return this->set(key, o, fTextMap);
+}
+
+namespace {
+
+class ExternalAnimationLayer final : public skottie::ExternalLayer {
+public:
+    ExternalAnimationLayer(sk_sp<skottie::Animation> anim, const SkSize& size)
+        : fAnimation(std::move(anim))
+        , fSize(size) {}
+
+private:
+    void render(SkCanvas* canvas, double t) override {
+        fAnimation->seekFrameTime(t);
+
+        const auto dst_rect = SkRect::MakeSize(fSize);
+        fAnimation->render(canvas, &dst_rect);
+    }
+
+    const sk_sp<skottie::Animation> fAnimation;
+    const SkSize                    fSize;
+};
+
+} // namespace
+
+ExternalAnimationPrecompInterceptor::ExternalAnimationPrecompInterceptor(
+        sk_sp<skresources::ResourceProvider> rprovider,
+        const char prefixp[])
+    : fResourceProvider(std::move(rprovider))
+    , fPrefix(prefixp) {}
+
+ExternalAnimationPrecompInterceptor::~ExternalAnimationPrecompInterceptor() = default;
+
+sk_sp<skottie::ExternalLayer> ExternalAnimationPrecompInterceptor::onLoadPrecomp(
+        const char[], const char name[], const SkSize& size) {
+    if (strncmp(name, fPrefix.c_str(), fPrefix.size())) {
+        return nullptr;
+    }
+
+    auto data = fResourceProvider->load("", name + fPrefix.size());
+    if (!data) {
+        return nullptr;
+    }
+
+    auto anim = skottie::Animation::Builder()
+                    .setPrecompInterceptor(sk_ref_sp(this))
+                    .make(static_cast<const char*>(data->data()), data->size());
+
+    return anim ? sk_make_sp<ExternalAnimationLayer>(std::move(anim), size)
+                : nullptr;
 }
 
 } // namespace skottie_utils

@@ -9,14 +9,16 @@
 #include "include/core/SkPaint.h"
 #include "include/core/SkSurface.h"
 #include "include/effects/SkRuntimeEffect.h"
-#include "include/gpu/GrContext.h"
+#include "include/gpu/GrDirectContext.h"
+#include "src/core/SkTLazy.h"
 #include "tests/Test.h"
 
 #include <algorithm>
 
-DEF_TEST(SkRuntimeEffectInvalidInputs, r) {
-    auto test = [r](const char* hdr, const char* expected) {
-        SkString src = SkStringPrintf("%s void main(float x, float y, inout half4 color) {}", hdr);
+DEF_TEST(SkRuntimeEffectInvalid, r) {
+    auto test = [r](const char* hdr, const char* body, const char* expected) {
+        SkString src = SkStringPrintf("%s void main(float2 p, inout half4 color) { %s }",
+                                      hdr, body);
         auto[effect, errorText] = SkRuntimeEffect::Make(src);
         REPORTER_ASSERT(r, !effect);
         REPORTER_ASSERT(r, errorText.contains(expected),
@@ -26,27 +28,29 @@ DEF_TEST(SkRuntimeEffectInvalidInputs, r) {
 
     // Features that are only allowed in .fp files (key, in uniform, ctype, when, tracked).
     // Ensure that these fail, and the error messages contain the relevant keyword.
-    test("layout(key) in bool Input;", "key");
-    test("in uniform float Input;", "in uniform");
-    test("layout(ctype=SkRect) float4 Input;", "ctype");
-    test("in bool Flag; layout(when=Flag) uniform float Input;", "when");
-    test("layout(tracked) uniform float Input;", "tracked");
+    test("layout(key) in bool Input;", "", "key");
+    test("in uniform float Input;", "", "in uniform");
+    test("layout(ctype=SkRect) float4 Input;", "", "ctype");
+    test("in bool Flag; layout(when=Flag) uniform float Input;", "", "when");
+    test("layout(tracked) uniform float Input;", "", "tracked");
 
     // Runtime SkSL supports a limited set of uniform types. No samplers, for example:
-    test("uniform sampler2D s;", "sampler2D");
+    test("uniform sampler2D s;", "", "sampler2D");
 
     // 'in' variables can't be arrays
-    test("in int Input[2];", "array");
+    test("in int Input[2];", "", "array");
 
     // Type specific restrictions:
 
     // 'bool', 'int' can't be 'uniform'
-    test("uniform bool Input;", "'uniform'");
-    test("uniform int Input;", "'uniform'");
+    test("uniform bool Input;", "", "'uniform'");
+    test("uniform int Input;", "", "'uniform'");
 
     // vector and matrix types can't be 'in'
-    test("in float2 Input;", "'in'");
-    test("in half3x3 Input;", "'in'");
+    test("in float2 Input;", "", "'in'");
+    test("in half3x3 Input;", "", "'in'");
+
+    test("half missing();", "color.r = missing();", "undefined function");
 }
 
 // Our packing rules and unit test code here relies on this:
@@ -55,7 +59,7 @@ static_assert(sizeof(bool) == 1);
 class TestEffect {
 public:
     TestEffect(skiatest::Reporter* r, const char* hdr, const char* body) {
-        SkString src = SkStringPrintf("%s void main(float x, float y, inout half4 color) { %s }",
+        SkString src = SkStringPrintf("%s void main(float2 p, inout half4 color) { %s }",
                                       hdr, body);
         auto[effect, errorText] = SkRuntimeEffect::Make(src);
         if (!effect) {
@@ -64,33 +68,16 @@ public:
             return;
         }
 
-        fEffect = std::move(effect);
-        fInputs = SkData::MakeUninitialized(fEffect->inputSize());
+        fBuilder.init(std::move(effect));
     }
 
-    struct InputVar {
-        template <typename T> InputVar& operator=(const T& val) {
-            SkASSERT(sizeof(T) == fVar.sizeInBytes());
-            memcpy(SkTAddOffset<void>(fOwner->fInputs->writable_data(), fVar.fOffset), &val,
-                   sizeof(T));
-            return *this;
-        }
-        TestEffect* fOwner;
-        const SkRuntimeEffect::Variable& fVar;
-    };
-
-    InputVar operator[](const char* name) {
-        auto input = std::find_if(fEffect->inputs().begin(), fEffect->inputs().end(),
-                                  [name](const auto& v) { return v.fName.equals(name); });
-        SkASSERT(input != fEffect->inputs().end());
-        return {this, *input};
+    SkRuntimeShaderBuilder::BuilderInput operator[](const char* name) {
+        return fBuilder->input(name);
     }
 
     void test(skiatest::Reporter* r, sk_sp<SkSurface> surface,
-              uint32_t TL, uint32_t TR, uint32_t BL, uint32_t BR) {
-        if (!fEffect) { return; }
-
-        auto shader = fEffect->makeShader(fInputs, nullptr, 0, nullptr, false);
+              uint32_t TL, uint32_t TR, uint32_t BL, uint32_t BR, SkScalar rotate = 0.0f) {
+        auto shader = fBuilder->makeShader(nullptr, false);
         if (!shader) {
             REPORT_FAILURE(r, "shader", SkString("Effect didn't produce a shader"));
             return;
@@ -99,6 +86,7 @@ public:
         SkPaint paint;
         paint.setShader(std::move(shader));
         paint.setBlendMode(SkBlendMode::kSrc);
+        surface->getCanvas()->rotate(rotate);
         surface->getCanvas()->drawPaint(paint);
 
         uint32_t actual[4];
@@ -116,7 +104,7 @@ public:
                                           "Got     : [ %08x %08x %08x %08x ]\n"
                                           "SkSL:\n%s\n",
                                           TL, TR, BL, BR, actual[0], actual[1], actual[2],
-                                          actual[3], fEffect->source().c_str()));
+                                          actual[3], fBuilder->fEffect->source().c_str()));
         }
     }
 
@@ -125,8 +113,7 @@ public:
     }
 
 private:
-    sk_sp<SkRuntimeEffect> fEffect;
-    sk_sp<SkData> fInputs;
+    SkTLazy<SkRuntimeShaderBuilder> fBuilder;
 };
 
 static void test_RuntimeEffect_Shaders(skiatest::Reporter* r, GrContext* context) {
@@ -139,7 +126,7 @@ static void test_RuntimeEffect_Shaders(skiatest::Reporter* r, GrContext* context
     }
     REPORTER_ASSERT(r, surface);
 
-    TestEffect xy(r, "", "color = half4(half(x - 0.5), half(y - 0.5), 0, 1);");
+    TestEffect xy(r, "", "color = half4(half2(p - 0.5), 0, 1);");
     xy.test(r, surface, 0xFF000000, 0xFF0000FF, 0xFF00FF00, 0xFF00FFFF);
 
     using float4 = std::array<float, 4>;
@@ -155,11 +142,20 @@ static void test_RuntimeEffect_Shaders(skiatest::Reporter* r, GrContext* context
 
     TestEffect pickColor(r, "in int flag; uniform half4 gColors[2];", "color = gColors[flag];");
     pickColor["gColors"] =
-            std::array<float4, 2>{float4{1.0f, 0.0f, 0.0f, 1.0f}, float4{0.0f, 1.0f, 0.0f, 1.0f}};
+            std::array<float4, 2>{float4{1.0f, 0.0f, 0.0f, 0.498f}, float4{0.0f, 1.0f, 0.0f, 1.0f}};
     pickColor["flag"] = 0;
-    pickColor.test(r, surface, 0xFF0000FF);
+    pickColor.test(r, surface, 0x7F00007F);  // Tests that we clamp to valid premul
     pickColor["flag"] = 1;
     pickColor.test(r, surface, 0xFF00FF00);
+
+    TestEffect inlineColor(r, "in half c;", "color = half4(c, c, c, 1);");
+    inlineColor["c"] = 0.498f;
+    inlineColor.test(r, surface, 0xFF7F7F7F);
+
+    // Test sk_FragCoord, which we output to color. Since the surface is 2x2, we should see
+    // (0,0), (1,0), (0,1), (1,1), multiply by 0.498 to make sure we're not saturating unexpectedly.
+    TestEffect fragCoord(r, "", "color = half4(0.498 * (half2(sk_FragCoord.xy) - 0.5), 0, 1);");
+    fragCoord.test(r, surface, 0xFF000000, 0xFF00007F, 0xFF007F00, 0xFF007F7F, 45.0f);
 }
 
 DEF_TEST(SkRuntimeEffectSimple, r) {
@@ -167,5 +163,5 @@ DEF_TEST(SkRuntimeEffectSimple, r) {
 }
 
 DEF_GPUTEST_FOR_RENDERING_CONTEXTS(SkRuntimeEffectSimple_GPU, r, ctxInfo) {
-    test_RuntimeEffect_Shaders(r, ctxInfo.grContext());
+    test_RuntimeEffect_Shaders(r, ctxInfo.directContext());
 }

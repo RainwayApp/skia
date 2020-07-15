@@ -58,7 +58,7 @@ protected:
         SkPath path;
         this->makePath(&path);
         if (fFlags & kBig_Flag) {
-            const SkMatrix m = SkMatrix::MakeScale(SkIntToScalar(10), SkIntToScalar(10));
+            const SkMatrix m = SkMatrix::Scale(10, 10);
             path.transform(m);
         }
 
@@ -732,8 +732,8 @@ protected:
                                int startAngle)
     {
 
-        SkScalar rx = SkMinScalar(rect.width(), xIn);
-        SkScalar ry = SkMinScalar(rect.height(), yIn);
+        SkScalar rx = std::min(rect.width(), xIn);
+        SkScalar ry = std::min(rect.height(), yIn);
 
         SkRect arcRect;
         arcRect.setLTRB(-rx, -ry, rx, ry);

@@ -10,6 +10,7 @@
 
 #include "include/private/SkTFitsIn.h"
 
+#include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -100,12 +101,9 @@ public:
 
     template <typename T>
     T* makeArrayDefault(size_t count) {
-        AssertRelease(SkTFitsIn<uint32_t>(count));
-        uint32_t safeCount = ToU32(count);
-        T* array = (T*)this->commonArrayAlloc<T>(safeCount);
-
-        // If T is primitive then no initialization takes place.
-        for (size_t i = 0; i < safeCount; i++) {
+        T* array = this->allocUninitializedArray<T>(count);
+        for (size_t i = 0; i < count; i++) {
+            // Default initialization: if T is primitive then the value is left uninitialized.
             new (&array[i]) T;
         }
         return array;
@@ -113,14 +111,19 @@ public:
 
     template <typename T>
     T* makeArray(size_t count) {
-        AssertRelease(SkTFitsIn<uint32_t>(count));
-        uint32_t safeCount = ToU32(count);
-        T* array = (T*)this->commonArrayAlloc<T>(safeCount);
-
-        // If T is primitive then the memory is initialized. For example, an array of chars will
-        // be zeroed.
-        for (size_t i = 0; i < safeCount; i++) {
+        T* array = this->allocUninitializedArray<T>(count);
+        for (size_t i = 0; i < count; i++) {
+            // Value initialization: if T is primitive then the value is zero-initialized.
             new (&array[i]) T();
+        }
+        return array;
+    }
+
+    template <typename T, typename Initializer>
+    T* makeInitializedArray(size_t count, Initializer initializer) {
+        T* array = this->allocUninitializedArray<T>(count);
+        for (size_t i = 0; i < count; i++) {
+            new (&array[i]) T(initializer(i));
         }
         return array;
     }
@@ -171,7 +174,10 @@ private:
     char* allocObjectWithFooter(uint32_t sizeIncludingFooter, uint32_t alignment);
 
     template <typename T>
-    char* commonArrayAlloc(uint32_t count) {
+    T* allocUninitializedArray(size_t countZ) {
+        AssertRelease(SkTFitsIn<uint32_t>(countZ));
+        uint32_t count = ToU32(countZ);
+
         char* objStart;
         AssertRelease(count <= std::numeric_limits<uint32_t>::max() / sizeof(T));
         uint32_t arraySize = ToU32(count * sizeof(T));
@@ -207,7 +213,7 @@ private:
                 padding);
         }
 
-        return objStart;
+        return (T*)objStart;
     }
 
     char*          fDtorCursor;
@@ -225,16 +231,14 @@ private:
 
 // Helper for defining allocators with inline/reserved storage.
 // For argument declarations, stick to the base type (SkArenaAlloc).
+// Note: Inheriting from the storage first means the storage will outlive the
+// SkArenaAlloc, letting ~SkArenaAlloc read it as it calls destructors.
+// (This is mostly only relevant for strict tools like MSAN.)
 template <size_t InlineStorageSize>
-class SkSTArenaAlloc : public SkArenaAlloc {
+class SkSTArenaAlloc : private std::array<char, InlineStorageSize>, public SkArenaAlloc {
 public:
     explicit SkSTArenaAlloc(size_t firstHeapAllocation = InlineStorageSize)
-        : INHERITED(fInlineStorage, InlineStorageSize, firstHeapAllocation) {}
-
-private:
-    char fInlineStorage[InlineStorageSize];
-
-    using INHERITED = SkArenaAlloc;
+        : SkArenaAlloc{this->data(), this->size(), firstHeapAllocation} {}
 };
 
 #endif  // SkArenaAlloc_DEFINED

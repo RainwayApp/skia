@@ -215,11 +215,11 @@ bool SkDCubic::isLinear(int startIndex, int endIndex) const {
     lineParameters.cubicEndPoints(*this, startIndex, endIndex);
     // FIXME: maybe it's possible to avoid this and compare non-normalized
     lineParameters.normalize();
-    double tiniest = SkTMin(SkTMin(SkTMin(SkTMin(SkTMin(SkTMin(SkTMin(fPts[0].fX, fPts[0].fY),
+    double tiniest = std::min(std::min(std::min(std::min(std::min(std::min(std::min(fPts[0].fX, fPts[0].fY),
             fPts[1].fX), fPts[1].fY), fPts[2].fX), fPts[2].fY), fPts[3].fX), fPts[3].fY);
-    double largest = SkTMax(SkTMax(SkTMax(SkTMax(SkTMax(SkTMax(SkTMax(fPts[0].fX, fPts[0].fY),
+    double largest = std::max(std::max(std::max(std::max(std::max(std::max(std::max(fPts[0].fX, fPts[0].fY),
             fPts[1].fX), fPts[1].fY), fPts[2].fX), fPts[2].fY), fPts[3].fX), fPts[3].fY);
-    largest = SkTMax(largest, -tiniest);
+    largest = std::max(largest, -tiniest);
     double distance = lineParameters.controlPtDistance(*this, 1);
     if (!approximately_zero_when_compared_to(distance, largest)) {
         return false;
@@ -257,7 +257,7 @@ int SkDCubic::ComplexBreak(const SkPoint pointsPtr[4], SkScalar* t) {
                 return (int) (t[0] > 0 && t[0] < 1);
             }
         }
-        // fall through if no t value found
+        [[fallthrough]]; // fall through if no t value found
         case SkCubicType::kSerpentine:
         case SkCubicType::kLocalCusp:
         case SkCubicType::kCuspAtInfinity: {
@@ -313,9 +313,10 @@ int SkDCubic::ComplexBreak(const SkPoint pointsPtr[4], SkScalar* t) {
                 }
                 return resultCount;
             }
+            break;
         }
         default:
-            ;
+            break;
     }
     return 0;
 }
@@ -343,7 +344,7 @@ int SkDCubic::searchRoots(double extremeTs[6], int extrema, double axisIntercept
     extremeTs[extrema++] = 0;
     extremeTs[extrema] = 1;
     SkASSERT(extrema < 6);
-    SkTQSort(extremeTs, extremeTs + extrema);
+    SkTQSort(extremeTs, extremeTs + extrema + 1);
     int validCount = 0;
     for (int index = 0; index < extrema; ) {
         double min = extremeTs[index];
