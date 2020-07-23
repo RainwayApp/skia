@@ -96,6 +96,15 @@ static bool get_feature_set(id<MTLDevice> device, MTLFeatureSet* featureSet) {
         return true;
     }
 #endif
+
+#if defined(TARGET_OS_TV)
+    if (@available(tvOS 12.0, *)) { if ([device supportsFeatureSet:MTLFeatureSet_tvOS_GPUFamily2_v2]) { *featureSet = MTLFeatureSet_tvOS_GPUFamily2_v2; return true; } }
+    if (@available(tvOS 11.0, *)) { if ([device supportsFeatureSet:MTLFeatureSet_tvOS_GPUFamily2_v1]) { *featureSet = MTLFeatureSet_tvOS_GPUFamily2_v1; return true; } }
+    if (@available(tvOS 12.0, *)) { if ([device supportsFeatureSet:MTLFeatureSet_tvOS_GPUFamily1_v4]) { *featureSet = MTLFeatureSet_tvOS_GPUFamily1_v4; return true; } }
+    if (@available(tvOS 12.0, *)) { if ([device supportsFeatureSet:MTLFeatureSet_tvOS_GPUFamily1_v3]) { *featureSet = MTLFeatureSet_tvOS_GPUFamily1_v3; return true; } }
+    if (@available(tvOS 10.0, *)) { if ([device supportsFeatureSet:MTLFeatureSet_tvOS_GPUFamily1_v2]) { *featureSet = MTLFeatureSet_tvOS_GPUFamily1_v2; return true; } }
+    if (@available(tvOS  9.0, *)) { if ([device supportsFeatureSet:MTLFeatureSet_tvOS_GPUFamily1_v1]) { *featureSet = MTLFeatureSet_tvOS_GPUFamily1_v1; return true; } }
+#endif
     // No supported feature sets were found
     return false;
 }
@@ -1421,7 +1430,7 @@ void GrMtlGpu::onDumpJSON(SkJSONWriter* writer) const {
         writer->appendBool("isRemovable", fDevice.isRemovable);
     }
 #endif
-    if (@available(macOS 10.13, iOS 11.0, *)) {
+    if (@available(macOS 10.13, iOS 11.0, tvOS 11.0, *)) {
         writer->appendU64("registryID", fDevice.registryID);
     }
 #if defined(SK_BUILD_FOR_MAC) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 101500
@@ -1448,7 +1457,7 @@ void GrMtlGpu::onDumpJSON(SkJSONWriter* writer) const {
     }
 #endif  // SK_BUILD_FOR_MAC
 #if __MAC_OS_X_VERSION_MAX_ALLOWED >= 101500 || __IPHONE_OS_VERSION_MAX_ALLOWED >= 130000
-    if (@available(macOS 10.15, iOS 13.0, *)) {
+    if (@available(macOS 10.15, iOS 13.0, tvOS 13.0, *)) {
         writer->appendBool("hasUnifiedMemory", fDevice.hasUnifiedMemory);
     }
 #endif
@@ -1464,12 +1473,12 @@ void GrMtlGpu::onDumpJSON(SkJSONWriter* writer) const {
         writer->appendU64("recommendedMaxWorkingSetSize", fDevice.recommendedMaxWorkingSetSize);
     }
 #endif  // SK_BUILD_FOR_MAC
-    if (@available(macOS 10.13, iOS 11.0, *)) {
+    if (@available(macOS 10.13, iOS 11.0, tvOS 11.0, *)) {
         writer->appendU64("currentAllocatedSize", fDevice.currentAllocatedSize);
         writer->appendU64("maxThreadgroupMemoryLength", fDevice.maxThreadgroupMemoryLength);
     }
 
-    if (@available(macOS 10.11, iOS 9.0, *)) {
+    if (@available(macOS 10.11, iOS 9.0, tvOS 9.0, *)) {
         writer->beginObject("maxThreadsPerThreadgroup");
         writer->appendU64("width", fDevice.maxThreadsPerThreadgroup.width);
         writer->appendU64("height", fDevice.maxThreadsPerThreadgroup.height);
@@ -1477,7 +1486,7 @@ void GrMtlGpu::onDumpJSON(SkJSONWriter* writer) const {
         writer->endObject();
     }
 
-    if (@available(macOS 10.13, iOS 11.0, *)) {
+    if (@available(macOS 10.13, iOS 11.0, tvOS 11.0, *)) {
         writer->appendBool("areProgrammableSamplePositionsSupported",
                            fDevice.areProgrammableSamplePositionsSupported);
         writer->appendBool("areRasterOrderGroupsSupported",
@@ -1498,10 +1507,10 @@ void GrMtlGpu::onDumpJSON(SkJSONWriter* writer) const {
     }
 #endif
 #endif  // SK_BUILD_FOR_MAC
-    if (@available(macOS 10.14, iOS 12.0, *)) {
+    if (@available(macOS 10.14, iOS 12.0, tvOS 12.0, *)) {
         writer->appendU64("maxBufferLength", fDevice.maxBufferLength);
     }
-    if (@available(macOS 10.13, iOS 11.0, *)) {
+    if (@available(macOS 10.13, iOS 11.0, tvOS 11.0, *)) {
         switch (fDevice.readWriteTextureSupport) {
             case MTLReadWriteTextureTier1:
                 writer->appendString("readWriteTextureSupport", "tier1");
@@ -1528,10 +1537,10 @@ void GrMtlGpu::onDumpJSON(SkJSONWriter* writer) const {
                 break;
         }
     }
-    if (@available(macOS 10.14, iOS 12.0, *)) {
+    if (@available(macOS 10.14, iOS 12.0, tvOS 12.0, *)) {
         writer->appendU64("maxArgumentBufferSamplerCount", fDevice.maxArgumentBufferSamplerCount);
     }
-#ifdef SK_BUILD_FOR_IOS
+#if defined(SK_BUILD_FOR_IOS) && !defined(TARGET_OS_TV)
     if (@available(iOS 13.0, *)) {
         writer->appendU64("sparseTileSizeInBytes", fDevice.sparseTileSizeInBytes);
     }
